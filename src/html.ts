@@ -70,6 +70,7 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
   #index-list .fn-item .fn-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #index-list .fn-item.unchecked .fn-name { text-decoration: line-through; opacity: 0.5; }
   #index-list .fn-item.unchecked { cursor: default; }
+  #index-list .fn-item.index-highlighted { background: #3a3a6e; color: #FFD700 !important; border-left: 3px solid #FFD700; }
   .mermaid-warning { color: #e8a847; font-size: 12px; margin-top: 4px; }
 </style>
 </head>
@@ -684,11 +685,27 @@ function highlightNode(key) {
   // Fade everything that's not highlighted
   cy.nodes().not(n).not(neighbors).addClass("faded");
   cy.edges().not(connectedEdges).addClass("faded");
+
+  // Highlight the corresponding item in the function index
+  clearIndexHighlight();
+  const item = document.querySelector('.fn-item[data-key="' + CSS.escape(key) + '"]');
+  if (item) {
+    item.classList.add("index-highlighted");
+    // Scroll it into view in the sidebar
+    item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
 }
 
 function clearHighlight() {
   cy.nodes().removeClass("highlighted faded");
   cy.edges().removeClass("highlighted faded");
+  clearIndexHighlight();
+}
+
+function clearIndexHighlight() {
+  document.querySelectorAll(".fn-item.index-highlighted").forEach(function(el) {
+    el.classList.remove("index-highlighted");
+  });
 }
 
 function shortName(key) { return key.split(".").pop() || key; }
