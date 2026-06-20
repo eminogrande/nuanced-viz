@@ -132,7 +132,7 @@ const REPO_PATH = ${JSON.stringify(repoPath)};
 // Renders only the selected node + N hops of callees and callers, not the
 // entire graph. The full GRAPH stays in JS memory; cytoscape only renders
 // the neighborhood. This prevents the browser from hanging on large graphs.
-const MAX_NODES = 300; // cap to prevent browser hang on hub functions
+const MAX_NODES = 1000; // cap to prevent browser hang on large graphs
 
 // Auto-derive categories from the repo's directory structure + function naming
 // patterns. This is generalized so the tool works on any codebase, not just
@@ -487,10 +487,9 @@ const FALLBACK_CONFIG = {
   spacingFactor: 1.2,
 };
 
-// Custom layout: selected node at center, categories radiate outward in
-// angular sectors. Within each sector, nodes are arranged in a grid-like
-// pattern (not purely radial) so they have breathing room. Functions from
-// the same directory cluster together in their sector.
+// Custom layout: selected node at center, categories in angular sectors,
+// and within each sector functions are clustered by file. Each file gets
+// a tight local mini-grid so functions from the same file stay together.
 function applyGroupedLayout() {
   const nodes = cy.nodes();
   if (nodes.length === 0) return;
@@ -506,71 +505,86 @@ function applyGroupedLayout() {
   // Sort categories by size (largest gets the widest sector)
   const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
   const totalNodes = nodes.length;
-
-  // Virtual canvas - large enough so nodes have room. cy.fit() zooms to fit.
   const center = { x: 0, y: 0 };
-  const nodeSpacing = 55;
-  const ringSpacing = 60; // distance between concentric rings
-  const sectorGap = 0.15; // radians of empty space between sectors
+  const nodeSpacing = 50;
+  const sectorGap = 0.12; // radians of empty space between category sectors
 
-  // Find the selected node and put it at center
+  // Find the selected node to place at center
   let centerNode = null;
   if (selectedKey) {
     const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
     centerNode = cy.getElementById(cyId);
   }
 
-  // Assign each category an angular sector around the center
-  // Total available angle = 2*PI, minus gaps between sectors
   const numCats = sortedCats.length;
   const totalGap = sectorGap * numCats;
   const availableAngle = 2 * Math.PI - totalGap;
+  let angleCursor = -Math.PI / 2;
 
-  let angleCursor = -Math.PI / 2; // start at top
-
-  for (const [cat, groupNodes] of sortedCats) {
-    const sectorSize = availableAngle * (groupNodes.length / totalNodes);
+  for (const [cat, catNodes] of sortedCats) {
+    const sectorSize = availableAngle * (catNodes.length / totalNodes);
     const sectorStart = angleCursor;
     const sectorEnd = sectorStart + sectorSize;
-    const sectorMid = (sectorStart + sectorEnd) / 2;
 
-    // Sort by call count (highest first = closest to center)
-    groupNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
+    // Within this category, group by file
+    const fileGroups = new Map();
+    for (const n of catNodes) {
+      const fp = (n.data("filepath") || "").replace(REPO_PATH + "/", "");
+      if (!fileGroups.has(fp)) fileGroups.set(fp, []);
+      fileGroups.get(fp).push(n);
+    }
 
-    // Arrange nodes in concentric arcs within the sector.
-    // Each "ring" has nodes placed along an arc at increasing radius.
-    const count = groupNodes.length;
-    const arcWidth = sectorSize; // angular width available
+    // Sort files by size (largest first = closer to center within sector)
+    const sortedFiles = [...fileGroups.entries()].sort((a, b) => b[1].length - a[1].length);
 
-    // How many nodes per ring? Arc length at radius r is r * arcWidth.
-    // We want nodeSpacing between nodes along the arc.
-    // Start with ring 1 at radius ringSpacing, place nodes, move to ring 2, etc.
-    let placed = 0;
-    let ring = 1;
+    // Each file gets a mini-cluster. Clusters are placed at increasing
+    // radius along the sector's angular range. Within a cluster, nodes
+    // are in a small grid.
+    const fileGap = 20; // pixels between file clusters
+    let fileIndex = 0;
+    const numFiles = sortedFiles.length;
 
-    while (placed < count) {
-      const radius = ring * ringSpacing;
-      // Max nodes that fit on this ring's arc with nodeSpacing between them
-      const arcLen = radius * Math.max(arcWidth, 0.3);
-      const maxOnRing = Math.max(1, Math.floor(arcLen / nodeSpacing));
+    for (const [file, fileNodes] of sortedFiles) {
+      // Sort nodes within file by call count
+      fileNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
 
-      const onThisRing = Math.min(maxOnRing, count - placed);
+      // Calculate cluster size: small grid
+      const count = fileNodes.length;
+      const clusterCols = Math.max(1, Math.ceil(Math.sqrt(count)));
+      const clusterRows = Math.ceil(count / clusterCols);
+      const clusterW = clusterCols * nodeSpacing;
+      const clusterH = clusterRows * nodeSpacing;
 
-      // Angular step between nodes on this ring
-      const angleStep = onThisRing > 1 ? Math.min(arcWidth, (arcWidth * 0.8) / (onThisRing - 1)) : 0;
-      const angleStart = sectorMid - (angleStep * (onThisRing - 1)) / 2;
+      // Position the cluster within the sector.
+      // Distribute clusters along the arc at increasing radius.
+      // Ring = which concentric ring this file cluster sits on
+      const ring = Math.floor(fileIndex / 3) + 1; // 3 files per ring
+      const slotInRing = fileIndex % 3;
 
-      for (let i = 0; i < onThisRing; i++) {
-        const n = groupNodes[placed + i];
-        const angle = angleStart + i * angleStep;
-        n.position({
-          x: center.x + radius * Math.cos(angle),
-          y: center.y + radius * Math.sin(angle)
+      // Base radius for this ring
+      const baseRadius = ring * (Math.max(clusterW, clusterH) + fileGap + 40);
+
+      // Angular position within sector: spread files across the sector angle
+      const angleFrac = numFiles > 1 ? fileIndex / (numFiles - 1) : 0.5;
+      const angle = sectorStart + sectorSize * angleFrac;
+
+      // Cluster center position
+      const clusterCx = center.x + baseRadius * Math.cos(angle);
+      const clusterCy = center.y + baseRadius * Math.sin(angle);
+
+      // Place nodes in a mini-grid centered on the cluster center
+      const startX = clusterCx - clusterW / 2;
+      const startY = clusterCy - clusterH / 2;
+
+      for (let i = 0; i < count; i++) {
+        const r = Math.floor(i / clusterCols);
+        const c = i % clusterCols;
+        fileNodes[i].position({
+          x: startX + c * nodeSpacing,
+          y: startY + r * nodeSpacing
         });
       }
-
-      placed += onThisRing;
-      ring++;
+      fileIndex++;
     }
 
     angleCursor = sectorEnd + sectorGap;
