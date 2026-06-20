@@ -1178,15 +1178,37 @@ function buildIndex() {
       if (list) list.style.display = list.style.display === "none" ? "block" : "none";
     };
 
-    // Hover on file header highlights all functions in that file in the canvas
+    // Hover on file header highlights all functions in that file in the
+    // canvas (gold), fades everything else, and highlights the index items.
     header.onmouseenter = function() {
+      // Clear previous highlights
+      cy.nodes().removeClass("highlighted faded");
+      cy.edges().removeClass("highlighted faded");
+      clearIndexHighlight();
+
+      // Collect all canvas nodes for this file
+      const fileNodes = [];
       for (const key of fns) {
-        if (!isHidden(key)) {
-          const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
-          const n = cy.getElementById(cyId);
-          if (n.length) n.addClass("highlighted");
+        if (isHidden(key)) continue;
+        const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+        const n = cy.getElementById(cyId);
+        if (n.length) {
+          n.addClass("highlighted");
+          fileNodes.push(n);
+          // Highlight index item too
+          const item = document.querySelector('.fn-item[data-key="' + CSS.escape(key) + '"]');
+          if (item) item.classList.add("index-highlighted");
         }
       }
+
+      // Highlight edges between file nodes
+      for (const n of fileNodes) {
+        n.connectedEdges().addClass("highlighted");
+      }
+
+      // Fade everything not highlighted
+      cy.nodes().not(".highlighted").addClass("faded");
+      cy.edges().not(".highlighted").addClass("faded");
     };
     header.onmouseleave = () => clearHighlight();
 
