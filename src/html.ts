@@ -550,13 +550,14 @@ const FALLBACK_CONFIG = {
 };
 
 // Custom layout: selected node at center, categories in angular sectors,
-// and within each sector functions are clustered by file. Each file gets
-// a tight local mini-grid so functions from the same file stay together.
+// and within each sector functions are clustered by file. Uses a hybrid
+// approach: manual sector placement for category grouping, then a
+// compact force-directed pass to resolve overlaps.
 function applyGroupedLayout() {
   const nodes = cy.nodes();
   if (nodes.length === 0) return;
 
-  // Group nodes by category
+  // Initial positions: group by category in sectors, files as clusters
   const catGroups = new Map();
   for (const n of nodes) {
     const cat = n.data("category") || "other";
@@ -564,20 +565,10 @@ function applyGroupedLayout() {
     catGroups.get(cat).push(n);
   }
 
-  // Sort categories by size (largest gets the widest sector)
   const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
   const totalNodes = nodes.length;
   const center = { x: 0, y: 0 };
-  const nodeSpacing = 50;
-  const sectorGap = 0.12; // radians of empty space between category sectors
-
-  // Find the selected node to place at center
-  let centerNode = null;
-  if (selectedKey) {
-    const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
-    centerNode = cy.getElementById(cyId);
-  }
-
+  const sectorGap = 0.12;
   const numCats = sortedCats.length;
   const totalGap = sectorGap * numCats;
   const availableAngle = 2 * Math.PI - totalGap;
@@ -595,69 +586,96 @@ function applyGroupedLayout() {
       if (!fileGroups.has(fp)) fileGroups.set(fp, []);
       fileGroups.get(fp).push(n);
     }
-
-    // Sort files by size (largest first = closer to center within sector)
     const sortedFiles = [...fileGroups.entries()].sort((a, b) => b[1].length - a[1].length);
 
-    // Each file gets a mini-cluster. Clusters are placed at increasing
-    // radius along the sector's angular range. Within a cluster, nodes
-    // are in a small grid.
-    const fileGap = 20; // pixels between file clusters
-    let fileIndex = 0;
+    const nodeSpacing = 32;
+    const ringStep = 90;
+    const filesPerRing = 3;
     const numFiles = sortedFiles.length;
 
-    for (const [file, fileNodes] of sortedFiles) {
-      // Sort nodes within file by call count
+    for (let fi = 0; fi < sortedFiles.length; fi++) {
+      const [file, fileNodes] = sortedFiles[fi];
       fileNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
-
-      // Calculate cluster size: small grid
       const count = fileNodes.length;
-      const clusterCols = Math.max(1, Math.ceil(Math.sqrt(count)));
-      const clusterRows = Math.ceil(count / clusterCols);
-      const clusterW = clusterCols * nodeSpacing;
-      const clusterH = clusterRows * nodeSpacing;
+      const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
+      const rows = Math.ceil(count / cols);
+      const cw = cols * nodeSpacing;
+      const ch = rows * nodeSpacing;
 
-      // Position the cluster within the sector.
-      // Distribute clusters along the arc at increasing radius.
-      // Ring = which concentric ring this file cluster sits on
-      const ring = Math.floor(fileIndex / 3) + 1; // 3 files per ring
-      const slotInRing = fileIndex % 3;
-
-      // Base radius for this ring
-      const baseRadius = ring * (Math.max(clusterW, clusterH) + fileGap + 40);
-
-      // Angular position within sector: spread files across the sector angle
-      const angleFrac = numFiles > 1 ? fileIndex / (numFiles - 1) : 0.5;
+      const ring = Math.floor(fi / filesPerRing) + 1;
+      const baseRadius = ring * ringStep;
+      const angleFrac = numFiles > 1 ? fi / (numFiles - 1) : 0.5;
       const angle = sectorStart + sectorSize * angleFrac;
 
-      // Cluster center position
-      const clusterCx = center.x + baseRadius * Math.cos(angle);
-      const clusterCy = center.y + baseRadius * Math.sin(angle);
-
-      // Place nodes in a mini-grid centered on the cluster center
-      const startX = clusterCx - clusterW / 2;
-      const startY = clusterCy - clusterH / 2;
+      const cx = center.x + baseRadius * Math.cos(angle);
+      const cy = center.y + baseRadius * Math.sin(angle);
+      const startX = cx - cw / 2;
+      const startY = cy - ch / 2;
 
       for (let i = 0; i < count; i++) {
-        const r = Math.floor(i / clusterCols);
-        const c = i % clusterCols;
+        const r = Math.floor(i / cols);
+        const c = i % cols;
         fileNodes[i].position({
           x: startX + c * nodeSpacing,
           y: startY + r * nodeSpacing
         });
       }
-      fileIndex++;
     }
-
     angleCursor = sectorEnd + sectorGap;
   }
 
-  // Put the selected node at the exact center
+  // Selected node at center
+  let centerNode = null;
+  if (selectedKey) {
+    const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
+    centerNode = cy.getElementById(cyId);
+  }
   if (centerNode && centerNode.length) {
     centerNode.position({ x: center.x, y: center.y });
   }
 
-  cy.fit(undefined, 50);
+  // Post-processing: iteratively push apart overlapping nodes.
+  // Simple relaxation pass - cheaper and more reliable than cose.
+  const minDist = 28;
+  const allNodes = cy.nodes();
+  const pos = [];
+  for (let i = 0; i < allNodes.length; i++) {
+    const p = allNodes[i].position();
+    pos.push({ id: allNodes[i].id(), x: p.x, y: p.y });
+  }
+  for (let iter = 0; iter < 200; iter++) {
+    let moved = false;
+    for (let i = 0; i < pos.length; i++) {
+      for (let j = i + 1; j < pos.length; j++) {
+        const dx = pos[i].x - pos[j].x;
+        const dy = pos[i].y - pos[j].y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < minDist && d > 0.001) {
+          const push = (minDist - d) / 2 + 1;
+          const ux = dx / d, uy = dy / d;
+          pos[i].x += ux * push;
+          pos[i].y += uy * push;
+          pos[j].x -= ux * push;
+          pos[j].y -= uy * push;
+          moved = true;
+        } else if (d < 0.001) {
+          // Exact overlap: nudge randomly
+          pos[i].x += (Math.random() - 0.5) * minDist;
+          pos[i].y += (Math.random() - 0.5) * minDist;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+  for (const p of pos) {
+    const n = cy.getElementById(p.id);
+    if (n.length && !(centerNode && n.id() === centerNode.id())) {
+      n.position({ x: p.x, y: p.y });
+    }
+  }
+
+  cy.fit(undefined, 40);
 }
 
 function runLayout() {
