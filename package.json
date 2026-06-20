@@ -1,0 +1,22 @@
+{
+  "name": "nuanced-viz",
+  "version": "0.1.0",
+  "description": "Interactive browser visualizer for nuanced-mcp call graphs",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "nuanced-viz": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "node --test dist/test/selfcheck.test.js"
+  },
+  "dependencies": {
+    "ts-morph": "^25.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
