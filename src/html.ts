@@ -433,8 +433,8 @@ function buildCytoscapeStyle() {
   const style = [
     { selector: "node", style: {
       "label": "data(label)", "text-valign": "center", "text-halign": "center",
-      "color": "#ddd", "font-size": "10px", "background-color": "#2a4a8e",
-      "width": "mapData(callCount, 0, 50, 28, 54)", "height": "mapData(callCount, 0, 50, 28, 54)",
+      "color": "#ddd", "font-size": "8px", "background-color": "#2a4a8e",
+      "width": "mapData(callCount, 0, 80, 14, 36)", "height": "mapData(callCount, 0, 80, 14, 36)",
       "border-width": 2, "border-color": "#3a5a9e", "text-wrap": "wrap", "text-max-width": "80px",
       "text-overflow": "ellipsis"
     }},
@@ -485,57 +485,75 @@ const FALLBACK_CONFIG = {
   spacingFactor: 1.2,
 };
 
-// Custom layout: position nodes grouped by category in sectors around the
-// center. Each category gets an angular sector; nodes within a category are
-// arranged by call count (higher = closer to center). This makes functions
-// from the same directory cluster together visually.
+// Custom layout: position nodes grouped by category in spatial clusters.
+// Each category gets a region of the canvas; nodes within a category are
+// arranged in a grid pattern with generous spacing. Categories with more
+// nodes get proportionally larger regions.
 function applyGroupedLayout() {
   const nodes = cy.nodes();
   if (nodes.length === 0) return;
 
   // Group nodes by category
-  const catGroups = new Map(); // cat -> [nodeIds]
+  const catGroups = new Map();
   for (const n of nodes) {
     const cat = n.data("category") || "other";
     if (!catGroups.has(cat)) catGroups.set(cat, []);
     catGroups.get(cat).push(n);
   }
 
-  // Sort categories by size (largest first for better visual balance)
+  // Sort categories by size (largest first)
   const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
-  const numCats = sortedCats.length;
-  const centerX = cy.width() / 2;
-  const centerY = cy.height() / 2;
-  const maxRadius = Math.min(cy.width(), cy.height()) / 2 - 60;
+  const totalNodes = nodes.length;
 
-  // Assign each category an angular sector
-  let angleOffset = 0;
+  // Use a virtual canvas much larger than the real one so nodes have room.
+  // The cy.fit() at the end will zoom to fit everything.
+  const nodeSpacing = 55; // pixels between node centers
+  const padding = 80;
+
+  // Calculate how many rows/columns each category needs, then size the
+  // virtual canvas to fit all categories side by side.
+  let totalWidth = padding;
+  let maxRows = 1;
+
+  const catLayouts = [];
   for (const [cat, groupNodes] of sortedCats) {
-    const sectorSize = (2 * Math.PI) * (groupNodes.length / nodes.length);
-    const sectorStart = angleOffset;
-    const sectorEnd = angleOffset + sectorSize;
-
-    // Sort nodes within group by call count (highest first = closest to center)
+    // Sort by call count (highest first = top-left)
     groupNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
+    const count = groupNodes.length;
 
-    for (let i = 0; i < groupNodes.length; i++) {
-      const n = groupNodes[i];
-      // Radial position: higher call count = closer to center
-      const radialFrac = 1 - (i / groupNodes.length) * 0.7; // 0.3 to 1.0
-      const radius = maxRadius * radialFrac;
+    // Aim for roughly square blocks: cols ~ sqrt(count)
+    // But prefer wider blocks (more cols) to avoid tall narrow stacks
+    const cols = Math.max(1, Math.ceil(Math.sqrt(count * 1.5)));
+    const rows = Math.ceil(count / cols);
+    const blockW = cols * nodeSpacing + 40;
+    const blockH = rows * nodeSpacing + 40;
 
-      // Angular position: spread within the sector
-      const angleFrac = groupNodes.length > 1 ? i / (groupNodes.length - 1) : 0.5;
-      const angle = sectorStart + sectorSize * angleFrac;
-
-      const x = centerX + radius * Math.cos(angle);
-      const y = centerY + radius * Math.sin(angle);
-      n.position({ x, y });
-    }
-    angleOffset = sectorEnd;
+    catLayouts.push({ cat, groupNodes, cols, rows, blockW, blockH });
+    totalWidth += blockW + 30;
+    maxRows = Math.max(maxRows, rows);
   }
 
-  cy.fit(undefined, 40);
+  const virtualH = maxRows * nodeSpacing + padding * 2;
+
+  // Place categories left to right, each as a vertical block
+  let xOffset = padding;
+  for (const cl of catLayouts) {
+    const startX = xOffset;
+    const startY = padding;
+
+    for (let i = 0; i < cl.groupNodes.length; i++) {
+      const n = cl.groupNodes[i];
+      const r = Math.floor(i / cl.cols);
+      const c = i % cl.cols;
+      n.position({
+        x: startX + c * nodeSpacing,
+        y: startY + r * nodeSpacing
+      });
+    }
+    xOffset += cl.blockW + 30;
+  }
+
+  cy.fit(undefined, 50);
 }
 
 function runLayout() {
