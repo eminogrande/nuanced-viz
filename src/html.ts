@@ -101,6 +101,7 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
       <button id="tab-details">Details</button>
     </div>
     <div id="tab-index-content" class="tab-content active">
+      <div id="stats" style="padding:8px 0;border-bottom:1px solid #333;margin-bottom:8px;font-size:12px;color:#aaa;display:flex;flex-wrap:wrap;gap:12px;"></div>
       <div id="legend" style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 8px;border-bottom:1px solid #333;margin-bottom:8px;"></div>
       <div id="index-list"></div>
     </div>
@@ -971,6 +972,70 @@ document.getElementById("recenter").addEventListener("click", function() {
   applyGroupedLayout();
 });
 
+// Build stats bar: shows total functions, visible functions, calls, files,
+// categories, and complexity metrics. Updates when filters change.
+function buildStats() {
+  const container = document.getElementById("stats");
+  if (!container) return;
+  container.innerHTML = "";
+
+  // Count visible vs total
+  let totalFns = 0, visibleFns = 0, totalCalls = 0, visibleCalls = 0;
+  const visibleFiles = new Set(), totalFiles = new Set();
+  const catCounts = {};
+
+  for (const [key, node] of Object.entries(GRAPH)) {
+    totalFns++;
+    const fp = (node.filepath || "").replace(REPO_PATH + "/", "");
+    if (fp) totalFiles.add(fp);
+    const callCount = (node.callees || []).length;
+    totalCalls += callCount;
+
+    if (!isHidden(key)) {
+      visibleFns++;
+      visibleCalls += callCount;
+      if (fp) visibleFiles.add(fp);
+      const cat = getCategory(key);
+      catCounts[cat] = (catCounts[cat] || 0) + 1;
+    }
+  }
+
+  // Complexity: average calls per function + max calls (hub)
+  const avgCalls = visibleFns > 0 ? (visibleCalls / visibleFns).toFixed(1) : "0";
+  let maxCalls = 0, hubFn = "";
+  for (const [key, node] of Object.entries(GRAPH)) {
+    if (isHidden(key)) continue;
+    const c = (node.callees || []).length;
+    if (c > maxCalls) { maxCalls = c; hubFn = key.split(".").pop() || key; }
+  }
+
+  // Active categories count
+  const activeCats = Object.entries(visibleCategories).filter(([_, v]) => v).length;
+
+  const stats = [
+    ["Functions", visibleFns + (visibleFns < totalFns ? "/" + totalFns : "")],
+    ["Files", visibleFiles.size + (visibleFiles.size < totalFiles.size ? "/" + totalFiles.size : "")],
+    ["Calls", visibleCalls.toLocaleString()],
+    ["Avg calls/fn", avgCalls],
+    ["Hub", maxCalls + " (" + hubFn + ")"],
+    ["Groups", activeCats + "/" + derivedCategoryList.length],
+  ];
+
+  for (const [label, value] of stats) {
+    const item = document.createElement("span");
+    item.style.cssText = "display:inline-flex;align-items:center;gap:4px;";
+    const lbl = document.createElement("span");
+    lbl.style.cssText = "color:#666;font-size:11px;";
+    lbl.textContent = label + ":";
+    const val = document.createElement("span");
+    val.style.cssText = "color:#e0e0e0;font-weight:600;";
+    val.textContent = value;
+    item.appendChild(lbl);
+    item.appendChild(val);
+    container.appendChild(item);
+  }
+}
+
 // Build filter pills dynamically from derived categories
 function buildFilterPills() {
   const container = document.getElementById("filter-pills");
@@ -992,6 +1057,9 @@ function buildFilterPills() {
       label.classList.toggle("disabled", !visibleCategories[cat]);
       label.style.background = visibleCategories[cat] ? (categoryColors[cat] ? categoryColors[cat].bg : "#2a4a8e") : "";
       label.style.color = visibleCategories[cat] ? "#fff" : "#aaa";
+      // Rebuild the index so hidden categories are removed from the list
+      buildIndex();
+      buildStats();
       // Rerender the graph with layout
       if (selectedKey && !isHidden(selectedKey)) {
         selectNode(selectedKey);
@@ -1041,10 +1109,21 @@ function buildIndex() {
   const container = document.getElementById("index-list");
   container.innerHTML = "";
 
-  // Group by file - include ALL functions, even hidden ones
+  // Group by file - include functions hidden by per-file/per-function
+  // checkboxes (greyed out, so users can toggle them back) but EXCLUDE
+  // functions hidden by category filter pills (those are removed entirely).
   const byFile = new Map();
   for (const [key, node] of Object.entries(GRAPH)) {
-    if (isAnonymous(key) && !visibleCategories.anon) continue;
+    // Check if hidden by category filter (not by file/function checkbox)
+    let hiddenByCategory = false;
+    for (const [cat, visible] of Object.entries(visibleCategories)) {
+      if (!visible && derivedCategories[cat] && derivedCategories[cat](key)) {
+        hiddenByCategory = true;
+        break;
+      }
+    }
+    if (!visibleCategories.anon && isAnonymous(key)) hiddenByCategory = true;
+    if (hiddenByCategory) continue;
     const fp = (node.filepath || "").replace(REPO_PATH + "/", "");
     if (!byFile.has(fp)) byFile.set(fp, []);
     byFile.get(fp).push(key);
@@ -1154,6 +1233,7 @@ function buildIndex() {
 // Refresh only the graph canvas + side panel after a toggle.
 // The index list stays as-is so users can toggle things back on.
 function refreshGraphOnly() {
+  buildStats();
   if (selectedKey && isHidden(selectedKey)) {
     selectedKey = null;
   }
@@ -1185,6 +1265,7 @@ document.addEventListener("DOMContentLoaded", function() {
   initCytoscape();      // builds cytoscape style from derived categories
   buildFilterPills();   // builds filter pills from derived categories
   buildLegend();        // builds color legend from derived categories
+  buildStats();         // builds stats bar
   buildIndex();         // builds function index (all functions, with toggle checkboxes)
   document.getElementById("loading").style.display = "none";
 
