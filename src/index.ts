@@ -26,10 +26,12 @@ interface Args {
   fn?: string;
   graphFile?: string;
   stdin: boolean;
+  out?: string;
+  noOpen: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { language: "typescript", stdin: false };
+  const args: Args = { language: "typescript", stdin: false, noOpen: false };
   const positional: string[] = [];
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -39,6 +41,10 @@ function parseArgs(argv: string[]): Args {
       args.fn = argv[++i];
     } else if (arg === "--graph" || arg === "-g") {
       args.graphFile = argv[++i];
+    } else if (arg === "--out" || arg === "-o") {
+      args.out = argv[++i];
+    } else if (arg === "--no-open") {
+      args.noOpen = true;
     } else if (arg === "--stdin") {
       args.stdin = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -65,6 +71,8 @@ Options:
   -f, --fn <name>         Function to focus on initially
   -g, --graph <file>      Load a pre-built graph JSON instead of building one
       --stdin             Read graph JSON from stdin
+  -o, --out <file>        Write the HTML to <file> instead of a temp path
+      --no-open           Do not open the result in a browser (for CI/hosting)
   -h, --help              Show this help
 `);
 }
@@ -157,11 +165,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Generate HTML and open in browser
+  // Generate HTML and (optionally) open in browser
   const html = generateHtml(graph, repoPath, args.fn);
-  const htmlPath = join(tmpdir(), `nuanced-viz-${Date.now()}.html`);
+  const htmlPath = args.out ? resolve(args.out) : join(tmpdir(), `nuanced-viz-${Date.now()}.html`);
   writeFileSync(htmlPath, html, "utf8");
   console.log(`HTML written to: ${htmlPath}`);
+  if (args.noOpen) return;
   openBrowser(htmlPath);
   console.log("Opening in browser...");
 
