@@ -485,10 +485,10 @@ const FALLBACK_CONFIG = {
   spacingFactor: 1.2,
 };
 
-// Custom layout: position nodes grouped by category in spatial clusters.
-// Each category gets a region of the canvas; nodes within a category are
-// arranged in a grid pattern with generous spacing. Categories with more
-// nodes get proportionally larger regions.
+// Custom layout: selected node at center, categories radiate outward in
+// angular sectors. Within each sector, nodes are arranged in a grid-like
+// pattern (not purely radial) so they have breathing room. Functions from
+// the same directory cluster together in their sector.
 function applyGroupedLayout() {
   const nodes = cy.nodes();
   if (nodes.length === 0) return;
@@ -501,56 +501,82 @@ function applyGroupedLayout() {
     catGroups.get(cat).push(n);
   }
 
-  // Sort categories by size (largest first)
+  // Sort categories by size (largest gets the widest sector)
   const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
   const totalNodes = nodes.length;
 
-  // Use a virtual canvas much larger than the real one so nodes have room.
-  // The cy.fit() at the end will zoom to fit everything.
-  const nodeSpacing = 55; // pixels between node centers
-  const padding = 80;
+  // Virtual canvas - large enough so nodes have room. cy.fit() zooms to fit.
+  const center = { x: 0, y: 0 };
+  const nodeSpacing = 55;
+  const ringSpacing = 60; // distance between concentric rings
+  const sectorGap = 0.15; // radians of empty space between sectors
 
-  // Calculate how many rows/columns each category needs, then size the
-  // virtual canvas to fit all categories side by side.
-  let totalWidth = padding;
-  let maxRows = 1;
-
-  const catLayouts = [];
-  for (const [cat, groupNodes] of sortedCats) {
-    // Sort by call count (highest first = top-left)
-    groupNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
-    const count = groupNodes.length;
-
-    // Aim for roughly square blocks: cols ~ sqrt(count)
-    // But prefer wider blocks (more cols) to avoid tall narrow stacks
-    const cols = Math.max(1, Math.ceil(Math.sqrt(count * 1.5)));
-    const rows = Math.ceil(count / cols);
-    const blockW = cols * nodeSpacing + 40;
-    const blockH = rows * nodeSpacing + 40;
-
-    catLayouts.push({ cat, groupNodes, cols, rows, blockW, blockH });
-    totalWidth += blockW + 30;
-    maxRows = Math.max(maxRows, rows);
+  // Find the selected node and put it at center
+  let centerNode = null;
+  if (selectedKey) {
+    const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
+    centerNode = cy.getElementById(cyId);
   }
 
-  const virtualH = maxRows * nodeSpacing + padding * 2;
+  // Assign each category an angular sector around the center
+  // Total available angle = 2*PI, minus gaps between sectors
+  const numCats = sortedCats.length;
+  const totalGap = sectorGap * numCats;
+  const availableAngle = 2 * Math.PI - totalGap;
 
-  // Place categories left to right, each as a vertical block
-  let xOffset = padding;
-  for (const cl of catLayouts) {
-    const startX = xOffset;
-    const startY = padding;
+  let angleCursor = -Math.PI / 2; // start at top
 
-    for (let i = 0; i < cl.groupNodes.length; i++) {
-      const n = cl.groupNodes[i];
-      const r = Math.floor(i / cl.cols);
-      const c = i % cl.cols;
-      n.position({
-        x: startX + c * nodeSpacing,
-        y: startY + r * nodeSpacing
-      });
+  for (const [cat, groupNodes] of sortedCats) {
+    const sectorSize = availableAngle * (groupNodes.length / totalNodes);
+    const sectorStart = angleCursor;
+    const sectorEnd = sectorStart + sectorSize;
+    const sectorMid = (sectorStart + sectorEnd) / 2;
+
+    // Sort by call count (highest first = closest to center)
+    groupNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
+
+    // Arrange nodes in concentric arcs within the sector.
+    // Each "ring" has nodes placed along an arc at increasing radius.
+    const count = groupNodes.length;
+    const arcWidth = sectorSize; // angular width available
+
+    // How many nodes per ring? Arc length at radius r is r * arcWidth.
+    // We want nodeSpacing between nodes along the arc.
+    // Start with ring 1 at radius ringSpacing, place nodes, move to ring 2, etc.
+    let placed = 0;
+    let ring = 1;
+
+    while (placed < count) {
+      const radius = ring * ringSpacing;
+      // Max nodes that fit on this ring's arc with nodeSpacing between them
+      const arcLen = radius * Math.max(arcWidth, 0.3);
+      const maxOnRing = Math.max(1, Math.floor(arcLen / nodeSpacing));
+
+      const onThisRing = Math.min(maxOnRing, count - placed);
+
+      // Angular step between nodes on this ring
+      const angleStep = onThisRing > 1 ? Math.min(arcWidth, (arcWidth * 0.8) / (onThisRing - 1)) : 0;
+      const angleStart = sectorMid - (angleStep * (onThisRing - 1)) / 2;
+
+      for (let i = 0; i < onThisRing; i++) {
+        const n = groupNodes[placed + i];
+        const angle = angleStart + i * angleStep;
+        n.position({
+          x: center.x + radius * Math.cos(angle),
+          y: center.y + radius * Math.sin(angle)
+        });
+      }
+
+      placed += onThisRing;
+      ring++;
     }
-    xOffset += cl.blockW + 30;
+
+    angleCursor = sectorEnd + sectorGap;
+  }
+
+  // Put the selected node at the exact center
+  if (centerNode && centerNode.length) {
+    centerNode.position({ x: center.x, y: center.y });
   }
 
   cy.fit(undefined, 50);
