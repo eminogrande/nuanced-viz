@@ -45,6 +45,32 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
   #mermaid-output svg { max-width: 100%; }
   .node-count { font-size: 11px; color: #666; margin-left: 6px; }
   #loading { position: fixed; top: 50%; left: 35%; transform: translate(-50%,-50%); color: #888; font-size: 14px; z-index: 100; }
+  #filters { display: flex; gap: 6px; align-items: center; padding: 4px 12px; background: #141428; border-bottom: 1px solid #333; flex-shrink: 0; }
+  #filters .filter-label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-right: 4px; }
+  #filters label { color: #aaa; font-size: 12px; cursor: pointer; padding: 2px 8px; border-radius: 3px; border: 1px solid #333; user-select: none; }
+  #filters label.active { background: #2a4a8e; color: #fff; border-color: #4a6abe; }
+  #filters label.disabled { opacity: 0.4; }
+  #sidebar-tabs { display: flex; border-bottom: 1px solid #333; flex-shrink: 0; }
+  #sidebar-tabs button { flex: 1; padding: 8px; background: #141428; border: none; color: #888; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
+  #sidebar-tabs button.active { color: #fff; border-bottom-color: #4CAF50; background: #1a1a2e; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  #index-list { font-size: 12px; }
+  #index-list .file-group { margin-bottom: 2px; }
+  #index-list .file-header { color: #6db4ff; font-size: 11px; cursor: pointer; padding: 3px 4px; border-radius: 3px; font-family: monospace; word-break: break-all; display: flex; align-items: center; gap: 4px; }
+  #index-list .file-header:hover { background: #2a2a4e; }
+  #index-list .file-header .toggle { font-size: 10px; width: 12px; display: inline-block; }
+  #index-list .file-header .file-check { cursor: pointer; font-size: 14px; width: 16px; flex-shrink: 0; }
+  #index-list .file-header .file-check:hover { color: #fff; }
+  #index-list .file-header .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #index-list .fn-item { color: #aaa; cursor: pointer; padding: 2px 4px 2px 20px; border-radius: 3px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
+  #index-list .fn-item:hover { background: #2a2a4e; color: #fff; }
+  #index-list .fn-item .fn-check { cursor: pointer; font-size: 14px; width: 14px; flex-shrink: 0; }
+  #index-list .fn-item .fn-check:hover { color: #fff; }
+  #index-list .fn-item .fn-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #index-list .fn-item.unchecked .fn-name { text-decoration: line-through; opacity: 0.5; }
+  #index-list .fn-item.unchecked { cursor: default; }
+  .mermaid-warning { color: #e8a847; font-size: 12px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -62,20 +88,34 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
   <div class="spacer"></div>
   <span class="repo" title="${escapeHtml(repoPath)}">${escapeHtml(repoPath)}</span>
 </div>
+<div id="filters">
+  <span class="filter-label">Show:</span>
+  <div id="filter-pills" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+</div>
 <div id="main">
   <div id="cy"></div>
   <div id="sidebar">
-    <h2 id="sel-name">Click a node</h2>
-    <div class="detail" id="sel-file"></div>
-    <div class="detail" id="sel-line"></div>
-    <div class="detail" id="sel-calls"></div>
-    <div class="section-title">Callees</div>
-    <ul class="callees" id="sel-callees"></ul>
-    <div class="section-title">Callers</div>
-    <ul class="callers" id="sel-callers"></ul>
-    <div id="mermaid-container">
-      <div class="section-title">Mermaid Preview <span class="node-count" id="mermaid-nodes"></span></div>
-      <div id="mermaid-output">Select a function to see its subgraph</div>
+    <div id="sidebar-tabs">
+      <button id="tab-index" class="active">Function Index</button>
+      <button id="tab-details">Details</button>
+    </div>
+    <div id="tab-index-content" class="tab-content active">
+      <div id="legend" style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 8px;border-bottom:1px solid #333;margin-bottom:8px;"></div>
+      <div id="index-list"></div>
+    </div>
+    <div id="tab-details-content" class="tab-content">
+      <h2 id="sel-name">Click a node</h2>
+      <div class="detail" id="sel-file"></div>
+      <div class="detail" id="sel-line"></div>
+      <div class="detail" id="sel-calls"></div>
+      <div class="section-title">Callees</div>
+      <ul class="callees" id="sel-callees"></ul>
+      <div class="section-title">Callers</div>
+      <ul class="callers" id="sel-callers"></ul>
+      <div id="mermaid-container">
+        <div class="section-title">Mermaid Preview <span class="node-count" id="mermaid-nodes"></span></div>
+        <div id="mermaid-output">Select a function to see its subgraph</div>
+      </div>
     </div>
   </div>
 </div>
@@ -86,62 +126,346 @@ const GRAPH = ${graphJson};
 const INITIAL_FN = ${initialFnJson};
 const REPO_PATH = ${JSON.stringify(repoPath)};
 
-// Build cytoscape elements from the graph
-function buildElements(maxDepth, filterText) {
-  const elements = [];
-  const seen = new Set();
-  const filter = filterText ? filterText.toLowerCase() : null;
+// Build cytoscape elements for a neighborhood (bidirectional BFS from entryKey).
+// Renders only the selected node + N hops of callees and callers, not the
+// entire graph. The full GRAPH stays in JS memory; cytoscape only renders
+// the neighborhood. This prevents the browser from hanging on large graphs.
+const MAX_NODES = 300; // cap to prevent browser hang on hub functions
 
+// Auto-derive categories from the repo's directory structure + function naming
+// patterns. This is generalized so the tool works on any codebase, not just
+// nuri-expo. Categories are built at init time from the actual graph data.
+//
+// How groups are derived:
+// 1. Top-level source dirs (e.g. "services", "lib", "components") become groups.
+// 2. Second-level dirs (e.g. "services/bitcoin", "services/gnosis") become
+//    sub-groups if they have enough functions (>= 3), otherwise they merge
+//    into the parent.
+// 3. Generic patterns (setters, builtins, anonymous) are always detected.
+// 4. Everything that doesn't match a pattern falls into "other".
+
+let derivedCategories = {};  // cat name -> function(key) => boolean
+let derivedCategoryList = []; // ordered list of category names for display
+let visibleCategories = {};   // cat name -> boolean
+let categoryColors = {};     // cat name -> { bg, border }
+
+// Distinct color palette for groups. Cycled through as groups are discovered.
+const COLOR_PALETTE = [
+  { bg: "#2E86C1", border: "#5DADE2" },  // blue
+  { bg: "#B8860B", border: "#FFD700" },  // gold
+  { bg: "#C0392B", border: "#E74C3C" },  // red
+  { bg: "#E67E22", border: "#F39C12" },  // orange
+  { bg: "#8A2BE2", border: "#BA55D3" },  // purple
+  { bg: "#1ABC9C", border: "#16A085" },  // teal
+  { bg: "#008B8B", border: "#48D1CC" },  // cyan
+  { bg: "#DAA520", border: "#F0E68C" },  // goldenrod
+  { bg: "#DC143C", border: "#FF69B4" },  // crimson
+  { bg: "#228B22", border: "#32CD32" },  // forest green
+  { bg: "#4B0082", border: "#9370DB" },  // indigo
+  { bg: "#FF4500", border: "#FF7F50" },  // orange-red
+  { bg: "#2F4F4F", border: "#778899" },  // dark slate
+  { bg: "#8B008B", border: "#DDA0DD" },  // dark magenta
+  { bg: "#556B2F", border: "#9ACD32" },  // olive
+  { bg: "#CD853F", border: "#DEB887" },  // peru
+  { bg: "#1C5D99", border: "#4A90D9" },  // deep blue
+  { bg: "#6B3FA0", border: "#A17FD3" },  // royal purple
+  { bg: "#0D6E6E", border: "#3CB371" },  // dark teal-green
+  { bg: "#B5651D", border: "#D2A679" },  // copper
+];
+
+// Fixed colors for generic categories that exist on every codebase.
+const FIXED_COLORS = {
+  builtins: { bg: "#4A4A4A", border: "#6A6A6A" },
+  setters:  { bg: "#556B2F", border: "#9ACD32" },
+  anon:     { bg: "#333333", border: "#555555" },
+  other:    { bg: "#2a4a8e", border: "#5A7FCC" },
+};
+
+function isAnonymous(key) {
+  const name = key.split(".").pop() || key;
+  return name === "<anonymous>" || name.startsWith("<anonymous>__");
+}
+
+function isBuiltin(key) {
+  const n = key.split(".").pop() || key;
+  return ["filter","map","some","every","includes","push","slice","splice","join",
+    "split","replace","trim","toLowerCase","toUpperCase","startsWith","endsWith",
+    "find","findIndex","forEach","reduce","sort","keys","values","entries",
+    "has","add","delete","set","get","from","of","isArray","isInteger","isFinite",
+    "isNaN","parseInt","parseFloat","String","Number","Boolean","Object","Array",
+    "Promise","Date","Math","JSON","Error","RegExp","Map","Set","Symbol",
+    "max","min","round","floor","ceil","abs","pow","sqrt",
+    "now","getTime","toString","valueOf","bind","call","apply","then","catch",
+    "all","race","resolve","reject","parse","stringify","text","json","blob",
+    "setTimeout","clearTimeout","setInterval","clearInterval","console","print",
+    "isSafeInteger","BigInt","encodeURIComponent","decodeURIComponent",
+    "fromEntries","assign","freeze","create","defineProperty",
+    "log","warn","error","info","debug"].includes(n);
+}
+
+function isSetter(key) {
+  const n = (key.split(".").pop() || "");
+  return n.startsWith("set") && n.length > 3 && n[3] === n[3].toUpperCase();
+}
+
+// Build categories from the actual graph data by analyzing directory structure.
+function deriveCategories() {
+  // Collect all relative file paths
+  const files = new Set();
   for (const [key, node] of Object.entries(GRAPH)) {
-    if (filter && !key.toLowerCase().includes(filter)) continue;
-    const id = key.replace(/[^a-zA-Z0-9_]/g, "_");
-    const name = key.split(".").pop() || key;
-    const fname = (node.filepath || "").replace(REPO_PATH + "/", "");
-    const callCount = (node.callees || []).length;
-    elements.push({
-      data: { id, label: name, key, filepath: node.filepath || "", fname, lineno: node.lineno, callees: node.callees || [], callCount },
-      classes: node.callees && node.callees.length === 0 ? "leaf" : ""
-    });
-    seen.add(key);
+    const rel = (node.filepath || "").replace(REPO_PATH + "/", "");
+    if (rel) files.add(rel);
   }
 
-  // Edges: only for nodes in the filtered set
-  for (const [key, node] of Object.entries(GRAPH)) {
-    if (filter && !key.toLowerCase().includes(filter)) continue;
-    const fromId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+  // Group by the first 1-2 path segments. E.g. "services/bitcoin/..." -> "services/bitcoin"
+  // but "lib/featureFlags.ts" -> "lib". If a top-level dir has < 3 files, merge into parent.
+  const dirGroups = new Map(); // group name -> Set of file paths
+  const topLevelCounts = new Map(); // top-level dir -> file count
+
+  for (const file of files) {
+    const parts = file.split("/");
+    if (parts.length <= 1) {
+      // Root-level file, group as "root"
+      if (!dirGroups.has("root")) dirGroups.set("root", new Set());
+      dirGroups.get("root").add(file);
+      continue;
+    }
+    const topLevel = parts[0];
+    topLevelCounts.set(topLevel, (topLevelCounts.get(topLevel) || 0) + 1);
+
+    // Use 2-level grouping for directories with many files
+    if (parts.length >= 3) {
+      const twoLevel = parts[0] + "/" + parts[1];
+      if (!dirGroups.has(twoLevel)) dirGroups.set(twoLevel, new Set());
+      dirGroups.get(twoLevel).add(file);
+    } else {
+      if (!dirGroups.has(topLevel)) dirGroups.set(topLevel, new Set());
+      dirGroups.get(topLevel).add(file);
+    }
+  }
+
+  // Merge sparse 2-level groups back into their parent
+  const merged = new Map();
+  const groupFileSets = new Map(); // group -> Set of actual file paths
+  for (const [group, groupFiles] of dirGroups) {
+    if (group.includes("/") && groupFiles.size < 3) {
+      const parent = group.split("/")[0];
+      if (!merged.has(parent)) {
+        merged.set(parent, new Set());
+        groupFileSets.set(parent, new Set());
+      }
+      for (const f of groupFiles) {
+        merged.get(parent).add(f);
+        groupFileSets.get(parent).add(f);
+      }
+    } else {
+      merged.set(group, groupFiles);
+      groupFileSets.set(group, groupFiles);
+    }
+  }
+
+  // Build category matchers: a function belongs to a group if its file is in that group.
+  const orderedGroups = [...merged.keys()].sort();
+  derivedCategoryList = [];
+  let colorIdx = 0;
+
+  for (const group of orderedGroups) {
+    if (group === "root") continue; // skip root-level catch-all
+    const groupFiles = merged.get(group);
+    // Pre-compute the set of relative file paths for this group for fast lookup
+    const fileSet = new Set(groupFiles);
+    derivedCategories[group] = function(key) {
+      const node = GRAPH[key];
+      if (!node) return false;
+      const rel = (node.filepath || "").replace(REPO_PATH + "/", "");
+      return fileSet.has(rel);
+    };
+    // Check if any function in this group is not a builtin/setter/anon
+    let hasReal = false;
+    for (const key of Object.keys(GRAPH)) {
+      if (derivedCategories[group](key) && !isBuiltin(key) && !isSetter(key) && !isAnonymous(key)) {
+        hasReal = true;
+        break;
+      }
+    }
+    if (!hasReal) {
+      delete derivedCategories[group];
+      continue;
+    }
+    derivedCategoryList.push(group);
+    categoryColors[group] = COLOR_PALETTE[colorIdx % COLOR_PALETTE.length];
+    colorIdx++;
+  }
+
+  // Add generic categories (always present)
+  derivedCategories.setters = isSetter;
+  derivedCategories.builtins = isBuiltin;
+  derivedCategories.anon = isAnonymous;
+  derivedCategoryList.push("setters", "builtins", "anon");
+  categoryColors.setters = FIXED_COLORS.setters;
+  categoryColors.builtins = FIXED_COLORS.builtins;
+  categoryColors.anon = FIXED_COLORS.anon;
+  categoryColors.other = FIXED_COLORS.other;
+
+  // Initialize all as visible (except anon which is off by default)
+  for (const cat of derivedCategoryList) {
+    visibleCategories[cat] = cat !== "anon";
+  }
+}
+
+// User-unchecked files and functions from the index tab.
+// These remove nodes from the graph only; the index list keeps them
+// (greyed out) so users can toggle them back on.
+const hiddenFiles = new Set();   // relative file paths
+const hiddenFunctions = new Set(); // graph keys
+
+function isHidden(key) {
+  if (hiddenFunctions.has(key)) return true;
+  const node = GRAPH[key];
+  if (node) {
+    const relFile = (node.filepath || "").replace(REPO_PATH + "/", "");
+    if (hiddenFiles.has(relFile)) return true;
+  }
+  for (const [cat, visible] of Object.entries(visibleCategories)) {
+    if (!visible && derivedCategories[cat] && derivedCategories[cat](key)) return true;
+  }
+  if (!visibleCategories.anon && isAnonymous(key)) return true;
+  return false;
+}
+
+function getCategory(key) {
+  if (isAnonymous(key)) return "anon";
+  for (const cat of derivedCategoryList) {
+    if (cat === "setters" || cat === "builtins" || cat === "anon") continue;
+    if (derivedCategories[cat] && derivedCategories[cat](key)) return cat;
+  }
+  if (isSetter(key)) return "setters";
+  if (isBuiltin(key)) return "builtins";
+  return "other";
+}
+
+function buildNeighborhood(entryKey, depth, filterText) {
+  const filter = filterText ? filterText.toLowerCase() : null;
+  const elements = [];
+  const seen = new Set();
+
+  // If filtering, find all matching nodes and their immediate neighbors
+  if (filter) {
+    for (const [key, node] of Object.entries(GRAPH)) {
+      if (!key.toLowerCase().includes(filter)) continue;
+      if (isHidden(key)) continue;
+      if (seen.size >= MAX_NODES) break;
+      addNode(elements, seen, key, node);
+      for (const callee of node.callees || []) {
+        if (seen.size >= MAX_NODES) break;
+        if (GRAPH[callee] && !seen.has(callee) && !isHidden(callee)) {
+          addNode(elements, seen, callee, GRAPH[callee]);
+        }
+      }
+    }
+    addEdges(elements, seen);
+    return elements;
+  }
+
+  // No filter: bidirectional BFS from entryKey (skip hidden, except entryKey itself)
+  if (!GRAPH[entryKey]) return elements;
+  addNode(elements, seen, entryKey, GRAPH[entryKey]);
+
+  const queue = [{ key: entryKey, depth: 0 }];
+  while (queue.length > 0 && seen.size < MAX_NODES) {
+    const { key, d } = queue.shift();
+    if (d >= depth) continue;
+    const node = GRAPH[key];
+    if (!node) continue;
     for (const callee of node.callees || []) {
-      const toId = callee.replace(/[^a-zA-Z0-9_]/g, "_");
-      if (seen.has(callee) && fromId !== toId) {
-        elements.push({ data: { source: fromId, target: toId } });
+      if (seen.size >= MAX_NODES) break;
+      if (!seen.has(callee) && GRAPH[callee] && (!isHidden(callee) || callee === entryKey)) {
+        addNode(elements, seen, callee, GRAPH[callee]);
+        queue.push({ key: callee, depth: d + 1 });
+      }
+    }
+    const callers = findCallers(key);
+    for (const caller of callers) {
+      if (seen.size >= MAX_NODES) break;
+      if (!seen.has(caller) && GRAPH[caller] && (!isHidden(caller) || caller === entryKey)) {
+        addNode(elements, seen, caller, GRAPH[caller]);
+        queue.push({ key: caller, depth: d + 1 });
       }
     }
   }
+
+  addEdges(elements, seen);
   return elements;
+}
+
+function addNode(elements, seen, key, node) {
+  if (seen.has(key)) return;
+  seen.add(key);
+  const id = key.replace(/[^a-zA-Z0-9_]/g, "_");
+  const name = key.split(".").pop() || key;
+  const callCount = (node.callees || []).length;
+  const cat = getCategory(key);
+  const catClass = cat.replace(/[^a-zA-Z0-9_]/g, "_");
+  elements.push({
+    data: { id, label: name, key, filepath: node.filepath || "", lineno: node.lineno, callees: node.callees || [], callCount, category: cat },
+    classes: catClass + ((node.callees || []).length === 0 ? " leaf" : "")
+  });
+}
+
+function addEdges(elements, seen) {
+  for (const key of seen) {
+    const node = GRAPH[key];
+    if (!node) continue;
+    const fromId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+    for (const callee of node.callees || []) {
+      if (seen.has(callee) && callee !== key) {
+        elements.push({ data: { source: fromId, target: callee.replace(/[^a-zA-Z0-9_]/g, "_") } });
+      }
+    }
+  }
 }
 
 let cy;
 let currentDepth = 3;
+let selectedKey = null;
+
+function buildCytoscapeStyle() {
+  const style = [
+    { selector: "node", style: {
+      "label": "data(label)", "text-valign": "center", "text-halign": "center",
+      "color": "#ddd", "font-size": "10px", "background-color": "#2a4a8e",
+      "width": "mapData(callCount, 0, 50, 28, 54)", "height": "mapData(callCount, 0, 50, 28, 54)",
+      "border-width": 2, "border-color": "#3a5a9e", "text-wrap": "wrap", "text-max-width": "80px",
+      "text-overflow": "ellipsis"
+    }},
+    { selector: "node.leaf", style: { "opacity": 0.7 }},
+    { selector: "node:selected", style: { "background-color": "#4CAF50", "border-color": "#fff", "border-width": 4 }},
+    { selector: "node.highlighted", style: { "border-color": "#FFD700", "border-width": 4, "z-index": 999 }},
+    { selector: "edge", style: {
+      "curve-style": "bezier", "target-arrow-shape": "triangle",
+      "arrow-color": "#7799cc", "line-color": "#5577aa", "width": 2, "opacity": 0.7
+    }},
+    { selector: "edge:selected", style: { "line-color": "#4CAF50", "arrow-color": "#4CAF50", "width": 3, "opacity": 1 }},
+    { selector: "edge.highlighted", style: { "line-color": "#FFD700", "arrow-color": "#FFD700", "width": 3, "opacity": 1 }}
+  ];
+  // Add per-category color styles from the derived categories
+  for (const cat of derivedCategoryList) {
+    const colors = categoryColors[cat] || categoryColors.other;
+    // CSS class name: sanitize cat (replace / with _)
+    const cls = cat.replace(/[^a-zA-Z0-9_]/g, "_");
+    style.push({ selector: "node." + cls, style: { "background-color": colors.bg, "border-color": colors.border }});
+  }
+  // "other" category (functions not matching any group)
+  style.push({ selector: "node.other", style: { "background-color": categoryColors.other.bg, "border-color": categoryColors.other.border }});
+  return style;
+}
 
 function initCytoscape() {
+  // Start empty; we'll populate on selectNode
   cy = cytoscape({
     container: document.getElementById("cy"),
-    elements: buildElements(currentDepth, ""),
-    style: [
-      { selector: "node", style: {
-        "label": "data(label)", "text-valign": "center", "text-halign": "center",
-        "color": "#ddd", "font-size": "10px", "background-color": "#2a4a8e",
-        "width": "mapData(callCount, 0, 50, 24, 50)", "height": "mapData(callCount, 0, 50, 24, 50)",
-        "border-width": 1, "border-color": "#3a5a9e", "text-wrap": "wrap", "text-max-width": "80px",
-        "text-overflow": "ellipsis"
-      }},
-      { selector: "node.leaf", style: { "background-color": "#4a4a5e", "border-color": "#5a5a6e" }},
-      { selector: "node:selected", style: { "background-color": "#4CAF50", "border-color": "#2E7D32", "border-width": 3 }},
-      { selector: "edge", style: {
-        "curve-style": "bezier", "target-arrow-shape": "triangle",
-        "arrow-color": "#555", "line-color": "#333", "width": 1, "opacity": 0.6
-      }},
-      { selector: "edge:selected", style: { "line-color": "#4CAF50", "arrow-color": "#4CAF50", "width": 2, "opacity": 1 }}
-    ],
+    elements: [],
+    style: buildCytoscapeStyle(),
     layout: { name: "cose", animate: false, nodeRepulsion: 10000, idealEdgeLength: 100, nodeDimensionsIncludeLabels: true },
     wheelSensitivity: 0.2,
   });
@@ -149,6 +473,42 @@ function initCytoscape() {
   cy.on("tap", "node", function(evt) {
     selectNode(evt.target.data("key"));
   });
+}
+
+function refreshCytoscape() {
+  const search = document.getElementById("search").value;
+  const elements = search
+    ? buildNeighborhood(null, currentDepth, search)
+    : buildNeighborhood(selectedKey, currentDepth, "");
+  cy.elements().remove();
+  cy.add(elements);
+  cy.layout({ name: "cose", animate: false, nodeRepulsion: 8000, idealEdgeLength: 80, nodeDimensionsIncludeLabels: true, padding: 30 }).run();
+  // Re-select the currently selected node
+  if (selectedKey) {
+    const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
+    const n = cy.getElementById(cyId);
+    if (n.length) {
+      n.addClass("selected");
+      n.connectedEdges().addClass("selected");
+      cy.center(n);
+    }
+  }
+}
+
+// Highlight a node + its edges on hover from the side panel
+function highlightNode(key) {
+  const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+  const n = cy.getElementById(cyId);
+  if (!n.length) return;
+  cy.nodes().removeClass("highlighted");
+  cy.edges().removeClass("highlighted");
+  n.addClass("highlighted");
+  n.connectedEdges().addClass("highlighted");
+}
+
+function clearHighlight() {
+  cy.nodes().removeClass("highlighted");
+  cy.edges().removeClass("highlighted");
 }
 
 function shortName(key) { return key.split(".").pop() || key; }
@@ -193,12 +553,37 @@ function escapeHtml(s) {
 let mermaidInitialized = false;
 async function renderMermaid(subgraph, entryKey) {
   const type = document.getElementById("diagram-type").value;
+  const allKeys = Object.keys(subgraph);
+  const MERMAID_MAX_NODES = 50;
+
+  let truncated = false;
+  let renderGraph = subgraph;
+  if (allKeys.length > MERMAID_MAX_NODES) {
+    // Truncate: keep entrypoint + first N-1 callees by BFS order
+    truncated = true;
+    const kept = new Set([entryKey]);
+    const queue = [entryKey];
+    while (queue.length > 0 && kept.size < MERMAID_MAX_NODES) {
+      const k = queue.shift();
+      const node = subgraph[k];
+      if (!node) continue;
+      for (const c of node.callees || []) {
+        if (kept.size >= MERMAID_MAX_NODES) break;
+        if (subgraph[c] && !kept.has(c)) { kept.add(c); queue.push(c); }
+      }
+    }
+    renderGraph = {};
+    for (const k of kept) renderGraph[k] = subgraph[k];
+  }
+
   const mermaidText = type === "sequence"
-    ? toSequenceJs(subgraph, entryKey)
-    : toFlowchartJs(subgraph, entryKey);
+    ? toSequenceJs(renderGraph, entryKey)
+    : toFlowchartJs(renderGraph, entryKey);
 
   const out = document.getElementById("mermaid-output");
-  document.getElementById("mermaid-nodes").textContent = "(" + Object.keys(subgraph).length + " nodes)";
+  const nodeCount = allKeys.length;
+  const shown = Object.keys(renderGraph).length;
+  document.getElementById("mermaid-nodes").textContent = "(" + shown + (truncated ? "/" + nodeCount : "") + " nodes)";
 
   if (!mermaidInitialized) {
     mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
@@ -206,7 +591,11 @@ async function renderMermaid(subgraph, entryKey) {
   }
   try {
     const { svg } = await mermaid.render("mermaid-preview", mermaidText);
-    out.innerHTML = svg;
+    let html = svg;
+    if (truncated) {
+      html = '<div class="mermaid-warning">Showing ' + shown + ' of ' + nodeCount + ' nodes (capped for readability). Increase depth to explore further.</div>' + html;
+    }
+    out.innerHTML = html;
   } catch(e) {
     out.textContent = "Mermaid error: " + (e.message || e);
   }
@@ -260,10 +649,16 @@ function selectNode(key) {
   const node = GRAPH[key];
   if (!node) return;
 
+  selectedKey = key;
   cy.nodes().removeClass("selected");
+  cy.edges().removeClass("selected");
   const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
   const cyNode = cy.getElementById(cyId);
-  if (cyNode.length) cyNode.addClass("selected");
+  if (cyNode.length) {
+    cyNode.addClass("selected");
+    // Highlight edges connecting to this node
+    cyNode.connectedEdges().addClass("selected");
+  }
 
   document.getElementById("sel-name").textContent = shortName(key);
   const fname = (node.filepath || "").replace(REPO_PATH + "/", "");
@@ -275,14 +670,26 @@ function selectNode(key) {
   const calleesUl = document.getElementById("sel-callees");
   calleesUl.innerHTML = "";
   const inGraph = Object.keys(GRAPH);
+  let calleeCount = 0;
+  let hiddenCalleeCount = 0;
   for (const callee of node.callees || []) {
+    if (isHidden(callee)) { hiddenCalleeCount++; continue; }
     const li = document.createElement("li");
     li.textContent = shortName(callee);
     if (inGraph.includes(callee)) {
       li.onclick = () => selectNode(callee);
+      li.onmouseenter = () => highlightNode(callee);
+      li.onmouseleave = () => clearHighlight();
     } else {
       li.classList.add("external");
     }
+    calleesUl.appendChild(li);
+    calleeCount++;
+  }
+  if (hiddenCalleeCount > 0) {
+    const li = document.createElement("li");
+    li.classList.add("external");
+    li.textContent = "(" + hiddenCalleeCount + " hidden)";
     calleesUl.appendChild(li);
   }
 
@@ -291,28 +698,61 @@ function selectNode(key) {
   callersUl.innerHTML = "";
   const callers = findCallers(key);
   for (const caller of callers) {
+    if (isHidden(caller)) continue;
     const li = document.createElement("li");
     li.textContent = shortName(caller);
     li.onclick = () => selectNode(caller);
+    li.onmouseenter = () => highlightNode(caller);
+    li.onmouseleave = () => clearHighlight();
     callersUl.appendChild(li);
   }
 
   // Mermaid preview of subgraph
   const subgraph = buildSubgraph(key);
   renderMermaid(subgraph, key);
+
+  // Refresh cytoscape to show the neighborhood around the selected node
+  refreshCytoscape();
 }
 
 // Toolbar handlers
 document.getElementById("search").addEventListener("input", function() {
-  const text = this.value;
-  cy.elements().remove();
-  cy.add(buildElements(currentDepth, text));
-  cy.layout({ name: "cose", animate: false, nodeRepulsion: 10000, idealEdgeLength: 100, nodeDimensionsIncludeLabels: true }).run();
+  // If on index tab, filter the index list; otherwise refresh cytoscape
+  const indexActive = document.getElementById("tab-index").classList.contains("active");
+  if (indexActive) {
+    filterIndex(this.value);
+  } else {
+    refreshCytoscape();
+  }
 });
+
+// Filter the function index by search text
+function filterIndex(text) {
+  const lower = text ? text.toLowerCase() : null;
+  const groups = document.querySelectorAll("#index-list .file-group");
+  for (const group of groups) {
+    let visible = 0;
+    const items = group.querySelectorAll(".fn-item");
+    for (const item of items) {
+      const match = !lower || item.textContent.toLowerCase().includes(lower)
+        || (item.dataset.key || "").toLowerCase().includes(lower);
+      item.style.display = match ? "block" : "none";
+      if (match) visible++;
+    }
+    group.style.display = visible > 0 ? "block" : "none";
+    // Update header to show filtered count
+    const header = group.querySelector(".file-header");
+    if (header) {
+      const baseText = header.textContent.replace(/ \(\d+\)$/, "");
+      header.textContent = baseText + " (" + visible + ")";
+    }
+  }
+}
 
 document.getElementById("depth").addEventListener("input", function() {
   currentDepth = parseInt(this.value);
   document.getElementById("depth-val").textContent = currentDepth;
+  refreshCytoscape();
 });
 
 document.getElementById("diagram-type").addEventListener("change", function() {
@@ -324,26 +764,245 @@ document.getElementById("diagram-type").addEventListener("change", function() {
 });
 
 document.getElementById("recenter").addEventListener("click", function() {
-  cy.layout({ name: "cose", animate: true, nodeRepulsion: 10000, idealEdgeLength: 100, nodeDimensionsIncludeLabels: true }).run();
+  cy.layout({ name: "cose", animate: true, nodeRepulsion: 8000, idealEdgeLength: 80, nodeDimensionsIncludeLabels: true }).run();
   cy.fit(undefined, 50);
+});
+
+// Build filter pills dynamically from derived categories
+function buildFilterPills() {
+  const container = document.getElementById("filter-pills");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const cat of derivedCategoryList) {
+    const label = document.createElement("label");
+    label.id = "flt-" + cat.replace(/[^a-zA-Z0-9_]/g, "_");
+    const isActive = visibleCategories[cat];
+    label.className = isActive ? "active" : "disabled";
+    // Display name: capitalize, replace _ with space, shorten long dir paths
+    const displayName = cat.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    label.textContent = displayName;
+    label.style.cssText = "color:" + (isActive ? "#fff" : "#aaa") + ";";
+    if (isActive) label.style.background = categoryColors[cat] ? categoryColors[cat].bg : "#2a4a8e";
+    label.addEventListener("click", function() {
+      visibleCategories[cat] = !visibleCategories[cat];
+      label.classList.toggle("active", visibleCategories[cat]);
+      label.classList.toggle("disabled", !visibleCategories[cat]);
+      label.style.background = visibleCategories[cat] ? (categoryColors[cat] ? categoryColors[cat].bg : "#2a4a8e") : "";
+      label.style.color = visibleCategories[cat] ? "#fff" : "#aaa";
+      // Rerender the graph with layout
+      if (selectedKey && !isHidden(selectedKey)) {
+        selectNode(selectedKey);
+      } else {
+        refreshCytoscape();
+      }
+    });
+    container.appendChild(label);
+  }
+}
+
+// Build a color legend in the sidebar showing each category + its color
+function buildLegend() {
+  const container = document.getElementById("legend");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const cat of derivedCategoryList) {
+    const colors = categoryColors[cat] || categoryColors.other;
+    const displayName = cat.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    const item = document.createElement("span");
+    item.style.cssText = "display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#aaa;cursor:pointer;";
+    const dot = document.createElement("span");
+    dot.style.cssText = "display:inline-block;width:10px;height:10px;border-radius:50%;background:" + colors.bg + ";";
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(displayName));
+    item.onclick = function() {
+      const pill = document.getElementById("flt-" + cat.replace(/[^a-zA-Z0-9_]/g, "_"));
+      if (pill) pill.click();
+    };
+    container.appendChild(item);
+  }
+  // "Other" legend item
+  const otherItem = document.createElement("span");
+  otherItem.style.cssText = "display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#aaa;";
+  const otherDot = document.createElement("span");
+  otherDot.style.cssText = "display:inline-block;width:10px;height:10px;border-radius:50%;background:" + categoryColors.other.bg + ";";
+  otherItem.appendChild(otherDot);
+  otherItem.appendChild(document.createTextNode("Other"));
+  container.appendChild(otherItem);
+}
+
+// Build the function index: ALL functions grouped by file, collapsible.
+// Shows every function regardless of hidden state (greyed out if hidden)
+// so users can toggle visibility back on. Toggling only affects the graph
+// and side panel, not the index list itself.
+function buildIndex() {
+  const container = document.getElementById("index-list");
+  container.innerHTML = "";
+
+  // Group by file - include ALL functions, even hidden ones
+  const byFile = new Map();
+  for (const [key, node] of Object.entries(GRAPH)) {
+    if (isAnonymous(key) && !visibleCategories.anon) continue;
+    const fp = (node.filepath || "").replace(REPO_PATH + "/", "");
+    if (!byFile.has(fp)) byFile.set(fp, []);
+    byFile.get(fp).push(key);
+  }
+
+  // Sort files alphabetically, functions within by name
+  const sortedFiles = [...byFile.keys()].sort();
+  for (const file of sortedFiles) {
+    const fns = byFile.get(file).sort((a, b) => shortName(a).localeCompare(shortName(b)));
+    const fileIsHidden = hiddenFiles.has(file);
+
+    const group = document.createElement("div");
+    group.className = "file-group" + (fileIsHidden ? " unchecked" : "");
+    group.dataset.file = file;
+
+    const header = document.createElement("div");
+    header.className = "file-header";
+
+    const check = document.createElement("span");
+    check.className = "file-check";
+    check.textContent = fileIsHidden ? "\u2610" : "\u2611";
+    check.title = "Toggle file visibility in graph";
+    check.onclick = function(e) {
+      e.stopPropagation();
+      if (hiddenFiles.has(file)) {
+        hiddenFiles.delete(file);
+        check.textContent = "\u2611";
+        group.classList.remove("unchecked");
+        // Restore function item styles
+        group.querySelectorAll(".fn-item").forEach(function(item) {
+          const key = item.dataset.key;
+          if (!hiddenFunctions.has(key)) {
+            item.classList.remove("unchecked");
+            const fc = item.querySelector(".fn-check");
+            if (fc) fc.textContent = "\u2611";
+          }
+        });
+      } else {
+        hiddenFiles.add(file);
+        check.textContent = "\u2610";
+        group.classList.add("unchecked");
+      }
+      // Only refresh graph + side panel, do NOT rebuild the index
+      refreshGraphOnly();
+    };
+
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = file + " (" + fns.length + ")";
+    name.onclick = function() {
+      const list = group.querySelector(".fn-list");
+      if (list) list.style.display = list.style.display === "none" ? "block" : "none";
+    };
+
+    header.appendChild(check);
+    header.appendChild(name);
+
+    const list = document.createElement("div");
+    list.className = "fn-list";
+    for (const key of fns) {
+      const fnIsHidden = hiddenFunctions.has(key) || fileIsHidden;
+      const item = document.createElement("div");
+      item.className = "fn-item" + (fnIsHidden ? " unchecked" : "");
+      item.dataset.key = key;
+
+      const fnCheck = document.createElement("span");
+      fnCheck.className = "fn-check";
+      fnCheck.textContent = fnIsHidden ? "\u2610" : "\u2611";
+      fnCheck.title = "Toggle function visibility in graph";
+      fnCheck.onclick = function(e) {
+        e.stopPropagation();
+        if (hiddenFunctions.has(key)) {
+          hiddenFunctions.delete(key);
+          fnCheck.textContent = "\u2611";
+          item.classList.remove("unchecked");
+        } else {
+          hiddenFunctions.add(key);
+          fnCheck.textContent = "\u2610";
+          item.classList.add("unchecked");
+        }
+        // Only refresh graph + side panel, do NOT rebuild the index
+        refreshGraphOnly();
+      };
+
+      const fnName = document.createElement("span");
+      fnName.className = "fn-name";
+      fnName.textContent = shortName(key);
+      fnName.onclick = () => {
+        if (hiddenFunctions.has(key)) return;
+        selectNode(key);
+        document.getElementById("tab-details").click();
+      };
+      fnName.onmouseenter = () => highlightNode(key);
+      fnName.onmouseleave = () => clearHighlight();
+
+      item.appendChild(fnCheck);
+      item.appendChild(fnName);
+      list.appendChild(item);
+    }
+
+    group.appendChild(header);
+    group.appendChild(list);
+    container.appendChild(group);
+  }
+}
+
+// Refresh only the graph canvas + side panel after a toggle.
+// The index list stays as-is so users can toggle things back on.
+function refreshGraphOnly() {
+  if (selectedKey && isHidden(selectedKey)) {
+    selectedKey = null;
+  }
+  if (selectedKey) {
+    selectNode(selectedKey);
+  } else {
+    refreshCytoscape();
+  }
+}
+
+// Tab switching
+document.getElementById("tab-index").addEventListener("click", function() {
+  document.getElementById("tab-index").classList.add("active");
+  document.getElementById("tab-details").classList.remove("active");
+  document.getElementById("tab-index-content").classList.add("active");
+  document.getElementById("tab-details-content").classList.remove("active");
+});
+
+document.getElementById("tab-details").addEventListener("click", function() {
+  document.getElementById("tab-details").classList.add("active");
+  document.getElementById("tab-index").classList.remove("active");
+  document.getElementById("tab-details-content").classList.add("active");
+  document.getElementById("tab-index-content").classList.remove("active");
 });
 
 // Init
 document.addEventListener("DOMContentLoaded", function() {
-  initCytoscape();
+  deriveCategories();   // must run first: builds categories from the repo's dir structure
+  initCytoscape();      // builds cytoscape style from derived categories
+  buildFilterPills();   // builds filter pills from derived categories
+  buildLegend();        // builds color legend from derived categories
+  buildIndex();         // builds function index (all functions, with toggle checkboxes)
   document.getElementById("loading").style.display = "none";
 
-  // Auto-select the initial function if provided, else select the first node
+  // Auto-select the initial function if provided, else find a high-degree node
+  let initKey = null;
   if (INITIAL_FN) {
-    // Find a key ending with .<INITIAL_FN>
-    const match = Object.keys(GRAPH).find(k => k.endsWith("." + INITIAL_FN));
-    if (match) {
-      selectNode(match);
-      cy.getElementById(match.replace(/[^a-zA-Z0-9_]/g, "_")).select();
-      cy.center(cy.getElementById(match.replace(/[^a-zA-Z0-9_]/g, "_")));
+    initKey = Object.keys(GRAPH).find(k => k.endsWith("." + INITIAL_FN));
+  }
+  if (!initKey) {
+    // Find the node with the most callees (likely a central function), skip hidden
+    let maxCalls = 0;
+    for (const [key, node] of Object.entries(GRAPH)) {
+      if (isHidden(key)) continue;
+      const c = (node.callees || []).length;
+      if (c > maxCalls) { maxCalls = c; initKey = key; }
     }
-  } else if (Object.keys(GRAPH).length > 0) {
-    selectNode(Object.keys(GRAPH)[0]);
+  }
+  if (initKey) {
+    selectNode(initKey);
+  } else {
+    document.getElementById("sel-name").textContent = "No functions found";
   }
 });
 </script>
