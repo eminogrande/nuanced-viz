@@ -86,6 +86,10 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
     <option value="sequence">Sequence</option>
   </select>
   <button id="recenter">Recenter</button>
+  <label>Min complexity:
+    <input type="range" id="complexity" min="0" max="100" value="0" />
+    <span id="complexity-val">All</span>
+  </label>
   <div class="spacer"></div>
   <span class="repo" title="${escapeHtml(repoPath)}">${escapeHtml(repoPath)}</span>
 </div>
@@ -132,7 +136,63 @@ const REPO_PATH = ${JSON.stringify(repoPath)};
 // Renders only the selected node + N hops of callees and callers, not the
 // entire graph. The full GRAPH stays in JS memory; cytoscape only renders
 // the neighborhood. This prevents the browser from hanging on large graphs.
-const MAX_NODES = 1000; // cap to prevent browser hang on large graphs
+const MAX_NODES = 300; // cap to prevent browser hang on hub functions
+
+// Importance scoring: each function gets a score based on how central it is
+// in the call graph. The complexity slider filters out low-importance
+// functions so the canvas + index show only the most structurally
+// significant ones.
+//
+// Score = callers + callees + log2(reachableDescendants + 1)
+// - callers: how many functions call this one (in-degree)
+// - callees: how many functions this one calls (out-degree)
+// - reachableDescendants: how many functions are reachable downstream
+//
+// Precomputed at init time. importanceThreshold is the minimum score to
+// be visible, set by the slider (0 = show all, 100 = show only hubs).
+let importanceScores = {};  // key -> score
+let importanceThreshold = 0; // minimum score to be visible (0 = all visible)
+
+function computeImportanceScores() {
+  // Count callers for each function
+  const callerCounts = {};
+  for (const [key, node] of Object.entries(GRAPH)) {
+    for (const callee of node.callees || []) {
+      callerCounts[callee] = (callerCounts[callee] || 0) + 1;
+    }
+  }
+
+  // Compute reachable descendants via iterative DFS (capped to avoid O(n^2))
+  const REACH_CAP = 500; // ponytail: cap reachable set per function to avoid quadratic blowup on hub graphs
+  for (const [key, node] of Object.entries(GRAPH)) {
+    const visited = new Set();
+    const stack = [...(node.callees || [])];
+    while (stack.length > 0 && visited.size < REACH_CAP) {
+      const cur = stack.pop();
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      const curNode = GRAPH[cur];
+      if (curNode) stack.push(...(curNode.callees || []));
+    }
+    const callers = callerCounts[key] || 0;
+    const callees = (node.callees || []).length;
+    const reachable = visited.size;
+    importanceScores[key] = callers + callees + Math.log2(reachable + 1);
+  }
+}
+
+function updateImportanceThreshold(sliderVal) {
+  // sliderVal 0 = show all (threshold 0)
+  // sliderVal 100 = show only top 1% (highest threshold)
+  if (sliderVal === 0) {
+    importanceThreshold = 0;
+    return;
+  }
+  // Collect all scores, sort descending, pick the percentile cutoff
+  const allScores = Object.values(importanceScores).sort((a, b) => b - a);
+  const cutoffIdx = Math.floor(allScores.length * (1 - sliderVal / 100));
+  importanceThreshold = cutoffIdx < allScores.length ? allScores[cutoffIdx] : Infinity;
+}
 
 // Auto-derive categories from the repo's directory structure + function naming
 // patterns. This is generalized so the tool works on any codebase, not just
@@ -332,6 +392,8 @@ function isHidden(key) {
     if (!visible && derivedCategories[cat] && derivedCategories[cat](key)) return true;
   }
   if (!visibleCategories.anon && isAnonymous(key)) return true;
+  // Complexity slider: hide functions below the importance threshold
+  if (importanceThreshold > 0 && (importanceScores[key] || 0) < importanceThreshold) return true;
   return false;
 }
 
@@ -1138,6 +1200,8 @@ function buildIndex() {
     }
     if (!visibleCategories.anon && isAnonymous(key)) hiddenByCategory = true;
     if (hiddenByCategory) continue;
+    // Also exclude functions hidden by the complexity slider
+    if (importanceThreshold > 0 && (importanceScores[key] || 0) < importanceThreshold) continue;
     const fp = (node.filepath || "").replace(REPO_PATH + "/", "");
     if (!byFile.has(fp)) byFile.set(fp, []);
     byFile.get(fp).push(key);
@@ -1312,6 +1376,7 @@ document.getElementById("tab-details").addEventListener("click", function() {
 
 // Init
 document.addEventListener("DOMContentLoaded", function() {
+  computeImportanceScores();  // precompute importance for complexity slider
   deriveCategories();   // must run first: builds categories from the repo's dir structure
   initCytoscape();      // builds cytoscape style from derived categories
   buildFilterPills();   // builds filter pills from derived categories
@@ -1319,6 +1384,24 @@ document.addEventListener("DOMContentLoaded", function() {
   buildStats();         // builds stats bar
   buildIndex();         // builds function index (all functions, with toggle checkboxes)
   document.getElementById("loading").style.display = "none";
+
+  // Complexity slider: filters out low-importance functions from both
+  // canvas and index. 0 = show all, 100 = show only the top hubs.
+  document.getElementById("complexity").addEventListener("input", function(e) {
+    const val = parseInt(e.target.value, 10);
+    document.getElementById("complexity-val").textContent = val === 0 ? "All" : "Top " + val + "%";
+    updateImportanceThreshold(val);
+    buildIndex();
+    buildStats();
+    if (selectedKey && isHidden(selectedKey)) {
+      selectedKey = null;
+    }
+    if (selectedKey) {
+      selectNode(selectedKey);
+    } else {
+      refreshCytoscape();
+    }
+  });
 
   // Auto-select the initial function if provided, else find a high-degree node
   let initKey = null;
