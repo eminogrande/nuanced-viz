@@ -1178,6 +1178,18 @@ function buildIndex() {
       if (list) list.style.display = list.style.display === "none" ? "block" : "none";
     };
 
+    // Hover on file header highlights all functions in that file in the canvas
+    header.onmouseenter = function() {
+      for (const key of fns) {
+        if (!isHidden(key)) {
+          const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+          const n = cy.getElementById(cyId);
+          if (n.length) n.addClass("highlighted");
+        }
+      }
+    };
+    header.onmouseleave = () => clearHighlight();
+
     header.appendChild(check);
     header.appendChild(name);
 
@@ -1216,12 +1228,15 @@ function buildIndex() {
         selectNode(key);
         document.getElementById("tab-details").click();
       };
-      fnName.onmouseenter = () => highlightNode(key);
-      fnName.onmouseleave = () => clearHighlight();
 
       item.appendChild(fnCheck);
       item.appendChild(fnName);
       list.appendChild(item);
+
+      // Hover on the entire row highlights the node in the canvas + scrolls
+      // this item into view, same as hovering the node in the canvas does.
+      item.onmouseenter = () => highlightNode(key);
+      item.onmouseleave = () => clearHighlight();
     }
 
     group.appendChild(header);
