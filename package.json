@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:site": "node dist/site.js site",
     "start": "node dist/index.js",
     "test": "node --test dist/test/selfcheck.test.js"
   },
