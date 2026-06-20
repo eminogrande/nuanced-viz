@@ -460,13 +460,45 @@ function buildCytoscapeStyle() {
   return style;
 }
 
+// Layout: concentric is used as the primary layout because cose throws
+// "f.source is not a function" on cytoscape 3.30.2 with long node IDs.
+// Concentric arranges nodes in concentric circles by call count (high-call
+// functions in the center), which gives good visual grouping.
+const LAYOUT_CONFIG = {
+  name: "concentric",
+  animate: false,
+  padding: 40,
+  fit: true,
+  concentric: function(n) { return (n.data("callCount") || 0) + 1; },
+  levelWidth: function() { return 3; },
+  minNodeSpacing: 20,
+};
+
+// Fallback: grid layout if concentric fails.
+const FALLBACK_CONFIG = {
+  name: "grid",
+  animate: false,
+  padding: 40,
+  fit: true,
+  spacingFactor: 1.2,
+};
+
+function runLayout() {
+  try {
+    cy.layout(LAYOUT_CONFIG).run();
+  } catch(e) {
+    console.warn("concentric layout failed, using grid:", e.message);
+    cy.layout(FALLBACK_CONFIG).run();
+  }
+  cy.fit(undefined, 40);
+}
+
 function initCytoscape() {
-  // Start empty; we'll populate on selectNode
   cy = cytoscape({
     container: document.getElementById("cy"),
     elements: [],
     style: buildCytoscapeStyle(),
-    layout: { name: "cose", animate: false, nodeRepulsion: 10000, idealEdgeLength: 100, nodeDimensionsIncludeLabels: true },
+    layout: LAYOUT_CONFIG,
     wheelSensitivity: 0.2,
   });
 
@@ -480,9 +512,21 @@ function refreshCytoscape() {
   const elements = search
     ? buildNeighborhood(null, currentDepth, search)
     : buildNeighborhood(selectedKey, currentDepth, "");
-  cy.elements().remove();
-  cy.add(elements);
-  cy.layout({ name: "cose", animate: false, nodeRepulsion: 8000, idealEdgeLength: 80, nodeDimensionsIncludeLabels: true, padding: 30 }).run();
+
+  // Destroy and recreate cytoscape to avoid the stale-edge bug where
+  // cose layout throws "f.source is not a function" after cy.add().
+  cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById("cy"),
+    elements: elements,
+    style: buildCytoscapeStyle(),
+    layout: LAYOUT_CONFIG,
+    wheelSensitivity: 0.2,
+  });
+  cy.on("tap", "node", function(evt) {
+    selectNode(evt.target.data("key"));
+  });
+
   // Re-select the currently selected node
   if (selectedKey) {
     const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -590,7 +634,9 @@ async function renderMermaid(subgraph, entryKey) {
     mermaidInitialized = true;
   }
   try {
-    const { svg } = await mermaid.render("mermaid-preview", mermaidText);
+    // Mermaid v11 requires a unique render ID each call
+    const renderId = "m" + Date.now();
+    const { svg } = await mermaid.render(renderId, mermaidText);
     let html = svg;
     if (truncated) {
       html = '<div class="mermaid-warning">Showing ' + shown + ' of ' + nodeCount + ' nodes (capped for readability). Increase depth to explore further.</div>' + html;
@@ -602,20 +648,24 @@ async function renderMermaid(subgraph, entryKey) {
 }
 
 // Client-side mermaid generation (mirrors src/mermaid.ts)
+// Node IDs are prefixed with n_ to avoid Mermaid syntax errors when
+// function keys start with digits or contain only underscores.
+function mId(key) { return "n_" + key.replace(/[^a-zA-Z0-9_]/g, "_"); }
+
 function toFlowchartJs(subgraph, entryKey) {
   const lines = ["graph TD"];
   const inGraph = new Set(Object.keys(subgraph));
-  const eId = entryKey.replace(/[^a-zA-Z0-9_]/g, "_");
+  const eId = mId(entryKey);
   lines.push("    " + eId + '["' + shortName(entryKey) + '"]');
   for (const [key] of Object.entries(subgraph)) {
     if (key === entryKey) continue;
-    lines.push("    " + key.replace(/[^a-zA-Z0-9_]/g, "_") + '["' + shortName(key) + '"]');
+    lines.push("    " + mId(key) + '["' + shortName(key) + '"]');
   }
   for (const [key, node] of Object.entries(subgraph)) {
-    const fromId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+    const fromId = mId(key);
     for (const callee of node.callees || []) {
       if (inGraph.has(callee) && callee !== key) {
-        lines.push("    " + fromId + " --> " + callee.replace(/[^a-zA-Z0-9_]/g, "_"));
+        lines.push("    " + fromId + " --> " + mId(callee));
       }
     }
   }
@@ -631,14 +681,15 @@ function toSequenceJs(subgraph, entryKey) {
     if (key !== entryKey && !seen.has(key)) { participants.push(key); seen.add(key); }
   }
   for (const p of participants) {
-    lines.push("    participant " + p.replace(/[^a-zA-Z0-9_]/g, "_") + " as " + shortName(p));
+    lines.push("    participant " + mId(p) + " as " + shortName(p));
   }
   for (const [key, node] of Object.entries(subgraph)) {
-    const fromId = key.replace(/[^a-zA-Z0-9_]/g, "_");
+    const fromId = mId(key);
     for (const callee of node.callees || []) {
       if (inGraph.has(callee) && callee !== key) {
-        lines.push("    " + fromId + "->>+" + callee.replace(/[^a-zA-Z0-9_]/g, "_") + ": " + shortName(callee));
-        lines.push("    " + callee.replace(/[^a-zA-Z0-9_]/g, "_") + "-->>-" + fromId + ": ok");
+        const toId = mId(callee);
+        lines.push("    " + fromId + "->>+" + toId + ": " + shortName(callee));
+        lines.push("    " + toId + "-->>-" + fromId + ": ok");
       }
     }
   }
@@ -764,8 +815,7 @@ document.getElementById("diagram-type").addEventListener("change", function() {
 });
 
 document.getElementById("recenter").addEventListener("click", function() {
-  cy.layout({ name: "cose", animate: true, nodeRepulsion: 8000, idealEdgeLength: 80, nodeDimensionsIncludeLabels: true }).run();
-  cy.fit(undefined, 50);
+  runLayout();
 });
 
 // Build filter pills dynamically from derived categories
