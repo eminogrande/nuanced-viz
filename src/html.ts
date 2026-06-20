@@ -440,13 +440,15 @@ function buildCytoscapeStyle() {
     }},
     { selector: "node.leaf", style: { "opacity": 0.7 }},
     { selector: "node:selected", style: { "background-color": "#4CAF50", "border-color": "#fff", "border-width": 4 }},
-    { selector: "node.highlighted", style: { "border-color": "#FFD700", "border-width": 4, "z-index": 999 }},
+    { selector: "node.highlighted", style: { "border-color": "#FFD700", "border-width": 4, "z-index": 999, "opacity": 1 }},
+    { selector: "node.faded", style: { "opacity": 0.12 }},
     { selector: "edge", style: {
       "curve-style": "bezier", "target-arrow-shape": "triangle",
       "arrow-color": "#7799cc", "line-color": "#5577aa", "width": 2, "opacity": 0.7
     }},
     { selector: "edge:selected", style: { "line-color": "#4CAF50", "arrow-color": "#4CAF50", "width": 3, "opacity": 1 }},
-    { selector: "edge.highlighted", style: { "line-color": "#FFD700", "arrow-color": "#FFD700", "width": 3, "opacity": 1 }}
+    { selector: "edge.highlighted", style: { "line-color": "#FFD700", "arrow-color": "#FFD700", "width": 3, "opacity": 1 }},
+    { selector: "edge.faded", style: { "opacity": 0.04 }}
   ];
   // Add per-category color styles from the derived categories
   for (const cat of derivedCategoryList) {
@@ -460,10 +462,10 @@ function buildCytoscapeStyle() {
   return style;
 }
 
-// Layout: concentric is used as the primary layout because cose throws
-// "f.source is not a function" on cytoscape 3.30.2 with long node IDs.
-// Concentric arranges nodes in concentric circles by call count (high-call
-// functions in the center), which gives good visual grouping.
+// Layout: custom positioning that groups nodes by category. Functions in the
+// same category (same source directory) are placed near each other in a
+// sector of the graph. The selected node is at the center, with its
+// neighborhood arranged around it grouped by category.
 const LAYOUT_CONFIG = {
   name: "concentric",
   animate: false,
@@ -483,14 +485,73 @@ const FALLBACK_CONFIG = {
   spacingFactor: 1.2,
 };
 
+// Custom layout: position nodes grouped by category in sectors around the
+// center. Each category gets an angular sector; nodes within a category are
+// arranged by call count (higher = closer to center). This makes functions
+// from the same directory cluster together visually.
+function applyGroupedLayout() {
+  const nodes = cy.nodes();
+  if (nodes.length === 0) return;
+
+  // Group nodes by category
+  const catGroups = new Map(); // cat -> [nodeIds]
+  for (const n of nodes) {
+    const cat = n.data("category") || "other";
+    if (!catGroups.has(cat)) catGroups.set(cat, []);
+    catGroups.get(cat).push(n);
+  }
+
+  // Sort categories by size (largest first for better visual balance)
+  const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
+  const numCats = sortedCats.length;
+  const centerX = cy.width() / 2;
+  const centerY = cy.height() / 2;
+  const maxRadius = Math.min(cy.width(), cy.height()) / 2 - 60;
+
+  // Assign each category an angular sector
+  let angleOffset = 0;
+  for (const [cat, groupNodes] of sortedCats) {
+    const sectorSize = (2 * Math.PI) * (groupNodes.length / nodes.length);
+    const sectorStart = angleOffset;
+    const sectorEnd = angleOffset + sectorSize;
+
+    // Sort nodes within group by call count (highest first = closest to center)
+    groupNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
+
+    for (let i = 0; i < groupNodes.length; i++) {
+      const n = groupNodes[i];
+      // Radial position: higher call count = closer to center
+      const radialFrac = 1 - (i / groupNodes.length) * 0.7; // 0.3 to 1.0
+      const radius = maxRadius * radialFrac;
+
+      // Angular position: spread within the sector
+      const angleFrac = groupNodes.length > 1 ? i / (groupNodes.length - 1) : 0.5;
+      const angle = sectorStart + sectorSize * angleFrac;
+
+      const x = centerX + radius * Math.cos(angle);
+      const y = centerY + radius * Math.sin(angle);
+      n.position({ x, y });
+    }
+    angleOffset = sectorEnd;
+  }
+
+  cy.fit(undefined, 40);
+}
+
 function runLayout() {
   try {
+    // Try concentric first, then apply grouped positioning on top
     cy.layout(LAYOUT_CONFIG).run();
+    applyGroupedLayout();
   } catch(e) {
-    console.warn("concentric layout failed, using grid:", e.message);
-    cy.layout(FALLBACK_CONFIG).run();
+    console.warn("layout failed, using grid:", e.message);
+    try {
+      cy.layout(FALLBACK_CONFIG).run();
+      applyGroupedLayout();
+    } catch(e2) {
+      console.warn("grid also failed:", e2.message);
+    }
   }
-  cy.fit(undefined, 40);
 }
 
 function initCytoscape() {
@@ -498,12 +559,20 @@ function initCytoscape() {
     container: document.getElementById("cy"),
     elements: [],
     style: buildCytoscapeStyle(),
-    layout: LAYOUT_CONFIG,
+    layout: { name: "null" },
     wheelSensitivity: 0.2,
   });
 
   cy.on("tap", "node", function(evt) {
     selectNode(evt.target.data("key"));
+  });
+
+  // Hover on canvas nodes: highlight node + connected edges, fade everything else
+  cy.on("mouseover", "node", function(evt) {
+    highlightNode(evt.target.data("key"));
+  });
+  cy.on("mouseout", "node", function() {
+    clearHighlight();
   });
 }
 
@@ -513,19 +582,28 @@ function refreshCytoscape() {
     ? buildNeighborhood(null, currentDepth, search)
     : buildNeighborhood(selectedKey, currentDepth, "");
 
-  // Destroy and recreate cytoscape to avoid the stale-edge bug where
-  // cose layout throws "f.source is not a function" after cy.add().
+  // Destroy and recreate cytoscape to avoid the stale-edge bug.
   cy.destroy();
   cy = cytoscape({
     container: document.getElementById("cy"),
     elements: elements,
     style: buildCytoscapeStyle(),
-    layout: LAYOUT_CONFIG,
+    // Use null layout (no auto-positioning); we position nodes ourselves
+    layout: { name: "null" },
     wheelSensitivity: 0.2,
   });
   cy.on("tap", "node", function(evt) {
     selectNode(evt.target.data("key"));
   });
+  cy.on("mouseover", "node", function(evt) {
+    highlightNode(evt.target.data("key"));
+  });
+  cy.on("mouseout", "node", function() {
+    clearHighlight();
+  });
+
+  // Apply grouped layout: positions nodes by category in sectors
+  applyGroupedLayout();
 
   // Re-select the currently selected node
   if (selectedKey) {
@@ -539,20 +617,34 @@ function refreshCytoscape() {
   }
 }
 
-// Highlight a node + its edges on hover from the side panel
+// Highlight a node + its connected edges, fade everything else.
+// Works for both canvas hover and side panel hover.
 function highlightNode(key) {
   const cyId = key.replace(/[^a-zA-Z0-9_]/g, "_");
   const n = cy.getElementById(cyId);
   if (!n.length) return;
-  cy.nodes().removeClass("highlighted");
-  cy.edges().removeClass("highlighted");
+
+  // Clear previous highlights
+  cy.nodes().removeClass("highlighted faded");
+  cy.edges().removeClass("highlighted faded");
+
+  // Highlight the node and its connected edges
   n.addClass("highlighted");
-  n.connectedEdges().addClass("highlighted");
+  const connectedEdges = n.connectedEdges();
+  connectedEdges.addClass("highlighted");
+
+  // Highlight the neighbors connected by those edges
+  const neighbors = connectedEdges.connectedNodes().not(n);
+  neighbors.addClass("highlighted");
+
+  // Fade everything that's not highlighted
+  cy.nodes().not(n).not(neighbors).addClass("faded");
+  cy.edges().not(connectedEdges).addClass("faded");
 }
 
 function clearHighlight() {
-  cy.nodes().removeClass("highlighted");
-  cy.edges().removeClass("highlighted");
+  cy.nodes().removeClass("highlighted faded");
+  cy.edges().removeClass("highlighted faded");
 }
 
 function shortName(key) { return key.split(".").pop() || key; }
@@ -815,7 +907,7 @@ document.getElementById("diagram-type").addEventListener("change", function() {
 });
 
 document.getElementById("recenter").addEventListener("click", function() {
-  runLayout();
+  applyGroupedLayout();
 });
 
 // Build filter pills dynamically from derived categories
