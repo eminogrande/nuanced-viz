@@ -19,7 +19,7 @@ function shortName(key: string): string {
 }
 
 export function toFlowchart(subgraph: Graph, entrypointKey: string): string {
-  const lines = ["graph TD"];
+  const lines = ["flowchart LR"];
   const entryId = nodeId(entrypointKey);
   const inGraph = new Set(Object.keys(subgraph));
 

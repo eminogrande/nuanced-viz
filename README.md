@@ -47,9 +47,10 @@ cat graph.json | node dist/index.js --stdin
 
 ### Cytoscape canvas (left)
 
-- Interactive graph with pan, zoom, and drag
-- Nodes are functions, sized by call count, colored by auto-derived group
-- Click a node to select it and see its neighborhood
+- Interactive graph with pan, native wheel zoom, and drag
+- Rooted caller-to-callee hierarchy with overlap-aware spacing
+- Compact labels and bounded automatic zoom keep dense neighborhoods readable
+- Click a node to select it and see its depth-limited neighborhood
 - Only renders the neighborhood around the selected node (up to 300 nodes) to stay responsive on large codebases
 
 ### Sidebar (right)
@@ -66,6 +67,7 @@ Two tabs:
 - Selected function's file, line, call count
 - Clickable callees and callers lists (hover to highlight in the canvas)
 - Live Mermaid preview of the selected function's subgraph (flowchart or sequence, switchable)
+- Left-to-right flowcharts at readable size with scrolling and a full-screen expanded view
 
 ### Filter toolbar
 

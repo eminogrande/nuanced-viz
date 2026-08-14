@@ -29,8 +29,8 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
   #toolbar .spacer { flex: 1; }
   #toolbar .repo { color: #888; font-size: 12px; font-family: monospace; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #main { display: flex; flex: 1; overflow: hidden; }
-  #cy { width: 70%; height: 100%; background: #0f0f23; }
-  #sidebar { width: 30%; min-width: 280px; background: #1a1a2e; color: #ccc; overflow-y: auto; padding: 16px; border-left: 1px solid #333; }
+  #cy { width: 72%; height: 100%; background: #0f0f23; }
+  #sidebar { width: 28%; min-width: 340px; background: #1a1a2e; color: #ccc; overflow-y: auto; padding: 16px; border-left: 1px solid #333; }
   #sidebar h2 { color: #e0e0e0; font-size: 16px; margin-bottom: 8px; word-break: break-all; }
   #sidebar .detail { font-size: 13px; color: #aaa; margin-bottom: 4px; }
   #sidebar .detail a { color: #6db4ff; text-decoration: none; }
@@ -40,9 +40,13 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
   #sidebar .callees li:hover, #sidebar .callers li:hover { background: #2a2a4e; color: #fff; }
   #sidebar .callees li.external, #sidebar .callers li.external { color: #777; cursor: default; }
   #mermaid-container { margin-top: 16px; }
-  #mermaid-container .section-title { margin-bottom: 4px; }
-  #mermaid-output { background: #0a0a1a; border: 1px solid #333; border-radius: 4px; padding: 12px; overflow-x: auto; font-size: 11px; }
-  #mermaid-output svg { max-width: 100%; }
+  #mermaid-container .section-title { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  #mermaid-expand { margin-left: auto; padding: 3px 8px; border: 1px solid #3d4664; border-radius: 4px; background: #252b46; color: #c9d4f0; cursor: pointer; font-size: 11px; }
+  #mermaid-expand:hover { background: #313958; color: #fff; }
+  #mermaid-output { min-height: 240px; max-height: 360px; background: #0a0a1a; border: 1px solid #333; border-radius: 6px; padding: 16px; overflow: auto; font-size: 11px; }
+  #mermaid-output svg { max-width: none; height: auto; display: block; }
+  #mermaid-container.expanded { position: fixed; inset: 16px; z-index: 1000; margin: 0; padding: 18px; border: 1px solid #465174; border-radius: 10px; background: #111429; box-shadow: 0 20px 80px #000c; }
+  #mermaid-container.expanded #mermaid-output { height: calc(100vh - 86px); max-height: none; }
   .node-count { font-size: 11px; color: #666; margin-left: 6px; }
   #loading { position: fixed; top: 50%; left: 35%; transform: translate(-50%,-50%); color: #888; font-size: 14px; z-index: 100; }
   #filters { display: flex; gap: 6px; align-items: center; padding: 4px 12px; background: #141428; border-bottom: 1px solid #333; flex-shrink: 0; }
@@ -119,7 +123,7 @@ export function generateHtml(graph: Graph, repoPath: string, initialFn?: string)
       <div class="section-title">Callers</div>
       <ul class="callers" id="sel-callers"></ul>
       <div id="mermaid-container">
-        <div class="section-title">Mermaid Preview <span class="node-count" id="mermaid-nodes"></span></div>
+        <div class="section-title">Mermaid Preview <span class="node-count" id="mermaid-nodes"></span><button id="mermaid-expand" type="button">Expand</button></div>
         <div id="mermaid-output">Select a function to see its subgraph</div>
       </div>
     </div>
@@ -437,15 +441,15 @@ function buildNeighborhood(entryKey, depth, filterText) {
 
   const queue = [{ key: entryKey, depth: 0 }];
   while (queue.length > 0 && seen.size < MAX_NODES) {
-    const { key, d } = queue.shift();
-    if (d >= depth) continue;
+    const { key, depth: level } = queue.shift();
+    if (level >= depth) continue;
     const node = GRAPH[key];
     if (!node) continue;
     for (const callee of node.callees || []) {
       if (seen.size >= MAX_NODES) break;
       if (!seen.has(callee) && GRAPH[callee] && (!isHidden(callee) || callee === entryKey)) {
         addNode(elements, seen, callee, GRAPH[callee]);
-        queue.push({ key: callee, depth: d + 1 });
+        queue.push({ key: callee, depth: level + 1 });
       }
     }
     const callers = findCallers(key);
@@ -453,13 +457,21 @@ function buildNeighborhood(entryKey, depth, filterText) {
       if (seen.size >= MAX_NODES) break;
       if (!seen.has(caller) && GRAPH[caller] && (!isHidden(caller) || caller === entryKey)) {
         addNode(elements, seen, caller, GRAPH[caller]);
-        queue.push({ key: caller, depth: d + 1 });
+        queue.push({ key: caller, depth: level + 1 });
       }
     }
   }
 
   addEdges(elements, seen);
   return elements;
+}
+
+function shortLabel(value, maxLength) {
+  const text = String(value);
+  if (text.length <= maxLength) return text;
+  const head = Math.ceil((maxLength - 1) * 0.65);
+  const tail = maxLength - 1 - head;
+  return text.slice(0, head) + "…" + text.slice(-tail);
 }
 
 function addNode(elements, seen, key, node) {
@@ -471,7 +483,7 @@ function addNode(elements, seen, key, node) {
   const cat = getCategory(key);
   const catClass = cat.replace(/[^a-zA-Z0-9_]/g, "_");
   elements.push({
-    data: { id, label: name, key, filepath: node.filepath || "", lineno: node.lineno, callees: node.callees || [], callCount, category: cat },
+    data: { id, label: shortLabel(name, 18), key, filepath: node.filepath || "", lineno: node.lineno, callees: node.callees || [], callCount, category: cat },
     classes: catClass + ((node.callees || []).length === 0 ? " leaf" : "")
   });
 }
@@ -492,15 +504,17 @@ function addEdges(elements, seen) {
 let cy;
 let currentDepth = 3;
 let selectedKey = null;
+const MIN_AUTO_ZOOM = 0.70;
+const MAX_AUTO_ZOOM = 1.15;
 
 function buildCytoscapeStyle() {
   const style = [
     { selector: "node", style: {
-      "label": "data(label)", "text-valign": "center", "text-halign": "center",
-      "color": "#ddd", "font-size": "8px", "background-color": "#2a4a8e",
-      "width": "mapData(callCount, 0, 80, 14, 36)", "height": "mapData(callCount, 0, 80, 14, 36)",
-      "border-width": 2, "border-color": "#3a5a9e", "text-wrap": "wrap", "text-max-width": "80px",
-      "text-overflow": "ellipsis"
+      "label": "data(label)", "text-valign": "bottom", "text-halign": "center", "text-margin-y": 5,
+      "color": "#dce5f7", "font-size": "10px", "font-weight": 500, "background-color": "#2a4a8e",
+      "width": "mapData(callCount, 0, 80, 14, 30)", "height": "mapData(callCount, 0, 80, 14, 30)",
+      "border-width": 2, "border-color": "#3a5a9e", "text-wrap": "none",
+      "text-background-color": "#0f0f23", "text-background-opacity": 0.86, "text-background-padding": "2px"
     }},
     { selector: "node.leaf", style: { "opacity": 0.7 }},
     { selector: "node:selected", style: { "background-color": "#4CAF50", "border-color": "#fff", "border-width": 4 }},
@@ -508,10 +522,10 @@ function buildCytoscapeStyle() {
     { selector: "node.faded", style: { "opacity": 0.12 }},
     { selector: "edge", style: {
       "curve-style": "bezier", "target-arrow-shape": "triangle",
-      "arrow-color": "#7799cc", "line-color": "#5577aa", "width": 2, "opacity": 0.7
+      "target-arrow-color": "#7799cc", "line-color": "#5577aa", "width": 2, "opacity": 0.7
     }},
-    { selector: "edge:selected", style: { "line-color": "#4CAF50", "arrow-color": "#4CAF50", "width": 3, "opacity": 1 }},
-    { selector: "edge.highlighted", style: { "line-color": "#FFD700", "arrow-color": "#FFD700", "width": 3, "opacity": 1 }},
+    { selector: "edge:selected", style: { "line-color": "#4CAF50", "target-arrow-color": "#4CAF50", "width": 3, "opacity": 1 }},
+    { selector: "edge.highlighted", style: { "line-color": "#FFD700", "target-arrow-color": "#FFD700", "width": 3, "opacity": 1 }},
     { selector: "edge.faded", style: { "opacity": 0.04 }}
   ];
   // Add per-category color styles from the derived categories
@@ -526,172 +540,50 @@ function buildCytoscapeStyle() {
   return style;
 }
 
-// Layout: custom positioning that groups nodes by category. Functions in the
-// same category (same source directory) are placed near each other in a
-// sector of the graph. The selected node is at the center, with its
-// neighborhood arranged around it grouped by category.
+// A rooted hierarchy matches how callers and callees are read. Cytoscape also
+// includes label bounds while spacing nodes, so labels do not overlap.
 const LAYOUT_CONFIG = {
-  name: "concentric",
+  name: "breadthfirst",
+  directed: true,
+  circle: false,
+  grid: true,
   animate: false,
-  padding: 40,
+  padding: 56,
   fit: true,
-  concentric: function(n) { return (n.data("callCount") || 0) + 1; },
-  levelWidth: function() { return 3; },
-  minNodeSpacing: 20,
+  spacingFactor: 1.45,
+  avoidOverlap: true,
+  nodeDimensionsIncludeLabels: true,
 };
 
-// Fallback: grid layout if concentric fails.
 const FALLBACK_CONFIG = {
   name: "grid",
   animate: false,
-  padding: 40,
+  padding: 56,
   fit: true,
-  spacingFactor: 1.2,
+  spacingFactor: 1.5,
+  avoidOverlap: true,
+  nodeDimensionsIncludeLabels: true,
 };
 
-// Custom layout: selected node at center, categories in angular sectors,
-// and within each sector functions are clustered by file. Uses a hybrid
-// approach: manual sector placement for category grouping, then a
-// compact force-directed pass to resolve overlaps.
 function applyGroupedLayout() {
   const nodes = cy.nodes();
   if (nodes.length === 0) return;
 
-  // Initial positions: group by category in sectors, files as clusters
-  const catGroups = new Map();
-  for (const n of nodes) {
-    const cat = n.data("category") || "other";
-    if (!catGroups.has(cat)) catGroups.set(cat, []);
-    catGroups.get(cat).push(n);
-  }
-
-  const sortedCats = [...catGroups.entries()].sort((a, b) => b[1].length - a[1].length);
-  const totalNodes = nodes.length;
-  const center = { x: 0, y: 0 };
-  const sectorGap = 0.12;
-  const numCats = sortedCats.length;
-  const totalGap = sectorGap * numCats;
-  const availableAngle = 2 * Math.PI - totalGap;
-  let angleCursor = -Math.PI / 2;
-
-  for (const [cat, catNodes] of sortedCats) {
-    const sectorSize = availableAngle * (catNodes.length / totalNodes);
-    const sectorStart = angleCursor;
-    const sectorEnd = sectorStart + sectorSize;
-
-    // Within this category, group by file
-    const fileGroups = new Map();
-    for (const n of catNodes) {
-      const fp = (n.data("filepath") || "").replace(REPO_PATH + "/", "");
-      if (!fileGroups.has(fp)) fileGroups.set(fp, []);
-      fileGroups.get(fp).push(n);
-    }
-    const sortedFiles = [...fileGroups.entries()].sort((a, b) => b[1].length - a[1].length);
-
-    const nodeSpacing = 32;
-    const ringStep = 90;
-    const filesPerRing = 3;
-    const numFiles = sortedFiles.length;
-
-    for (let fi = 0; fi < sortedFiles.length; fi++) {
-      const [file, fileNodes] = sortedFiles[fi];
-      fileNodes.sort((a, b) => (b.data("callCount") || 0) - (a.data("callCount") || 0));
-      const count = fileNodes.length;
-      const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
-      const rows = Math.ceil(count / cols);
-      const cw = cols * nodeSpacing;
-      const ch = rows * nodeSpacing;
-
-      const ring = Math.floor(fi / filesPerRing) + 1;
-      const baseRadius = ring * ringStep;
-      const angleFrac = numFiles > 1 ? fi / (numFiles - 1) : 0.5;
-      const angle = sectorStart + sectorSize * angleFrac;
-
-      const cx = center.x + baseRadius * Math.cos(angle);
-      const cy = center.y + baseRadius * Math.sin(angle);
-      const startX = cx - cw / 2;
-      const startY = cy - ch / 2;
-
-      for (let i = 0; i < count; i++) {
-        const r = Math.floor(i / cols);
-        const c = i % cols;
-        fileNodes[i].position({
-          x: startX + c * nodeSpacing,
-          y: startY + r * nodeSpacing
-        });
-      }
-    }
-    angleCursor = sectorEnd + sectorGap;
-  }
-
-  // Selected node at center
-  let centerNode = null;
+  const config = { ...LAYOUT_CONFIG };
   if (selectedKey) {
-    const cyId = selectedKey.replace(/[^a-zA-Z0-9_]/g, "_");
-    centerNode = cy.getElementById(cyId);
-  }
-  if (centerNode && centerNode.length) {
-    centerNode.position({ x: center.x, y: center.y });
+    const root = cy.getElementById(selectedKey.replace(/[^a-zA-Z0-9_]/g, "_"));
+    if (root.length) config.roots = root;
   }
 
-  // Post-processing: iteratively push apart overlapping nodes.
-  // Simple relaxation pass - cheaper and more reliable than cose.
-  const minDist = 28;
-  const allNodes = cy.nodes();
-  const pos = [];
-  for (let i = 0; i < allNodes.length; i++) {
-    const p = allNodes[i].position();
-    pos.push({ id: allNodes[i].id(), x: p.x, y: p.y });
-  }
-  for (let iter = 0; iter < 200; iter++) {
-    let moved = false;
-    for (let i = 0; i < pos.length; i++) {
-      for (let j = i + 1; j < pos.length; j++) {
-        const dx = pos[i].x - pos[j].x;
-        const dy = pos[i].y - pos[j].y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < minDist && d > 0.001) {
-          const push = (minDist - d) / 2 + 1;
-          const ux = dx / d, uy = dy / d;
-          pos[i].x += ux * push;
-          pos[i].y += uy * push;
-          pos[j].x -= ux * push;
-          pos[j].y -= uy * push;
-          moved = true;
-        } else if (d < 0.001) {
-          // Exact overlap: nudge randomly
-          pos[i].x += (Math.random() - 0.5) * minDist;
-          pos[i].y += (Math.random() - 0.5) * minDist;
-          moved = true;
-        }
-      }
-    }
-    if (!moved) break;
-  }
-  for (const p of pos) {
-    const n = cy.getElementById(p.id);
-    if (n.length && !(centerNode && n.id() === centerNode.id())) {
-      n.position({ x: p.x, y: p.y });
-    }
-  }
-
-  cy.fit(undefined, 40);
-}
-
-function runLayout() {
   try {
-    // Try concentric first, then apply grouped positioning on top
-    cy.layout(LAYOUT_CONFIG).run();
-    applyGroupedLayout();
+    cy.layout(config).run();
   } catch(e) {
-    console.warn("layout failed, using grid:", e.message);
-    try {
-      cy.layout(FALLBACK_CONFIG).run();
-      applyGroupedLayout();
-    } catch(e2) {
-      console.warn("grid also failed:", e2.message);
-    }
+    console.warn("hierarchy layout failed, using grid:", e.message);
+    cy.layout(FALLBACK_CONFIG).run();
   }
+
+  cy.fit(cy.elements(), 56);
+  cy.zoom(Math.max(MIN_AUTO_ZOOM, Math.min(cy.zoom(), MAX_AUTO_ZOOM)));
 }
 
 function initCytoscape() {
@@ -700,7 +592,8 @@ function initCytoscape() {
     elements: [],
     style: buildCytoscapeStyle(),
     layout: { name: "null" },
-    wheelSensitivity: 0.2,
+    minZoom: 0.15,
+    maxZoom: 2,
   });
 
   cy.on("tap", "node", function(evt) {
@@ -730,7 +623,8 @@ function refreshCytoscape() {
     style: buildCytoscapeStyle(),
     // Use null layout (no auto-positioning); we position nodes ourselves
     layout: { name: "null" },
-    wheelSensitivity: 0.2,
+    minZoom: 0.15,
+    maxZoom: 2,
   });
   cy.on("tap", "node", function(evt) {
     selectNode(evt.target.data("key"));
@@ -752,7 +646,6 @@ function refreshCytoscape() {
     if (n.length) {
       n.addClass("selected");
       n.connectedEdges().addClass("selected");
-      cy.center(n);
     }
   }
 }
@@ -878,7 +771,14 @@ async function renderMermaid(subgraph, entryKey) {
   document.getElementById("mermaid-nodes").textContent = "(" + shown + (truncated ? "/" + nodeCount : "") + " nodes)";
 
   if (!mermaidInitialized) {
-    mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "dark",
+      securityLevel: "loose",
+      flowchart: { useMaxWidth: false, htmlLabels: false, curve: "basis", nodeSpacing: 44, rankSpacing: 68 },
+      sequence: { useMaxWidth: false, diagramMarginX: 40, actorMargin: 60, messageMargin: 30 },
+      themeVariables: { fontSize: "13px", primaryColor: "#23355d", primaryTextColor: "#eef3ff", lineColor: "#8299c8" }
+    });
     mermaidInitialized = true;
   }
   try {
@@ -901,13 +801,14 @@ async function renderMermaid(subgraph, entryKey) {
 function mId(key) { return "n_" + key.replace(/[^a-zA-Z0-9_]/g, "_"); }
 
 function toFlowchartJs(subgraph, entryKey) {
-  const lines = ["graph TD"];
+  const lines = ["flowchart LR"];
   const inGraph = new Set(Object.keys(subgraph));
   const eId = mId(entryKey);
-  lines.push("    " + eId + '["' + shortName(entryKey) + '"]');
+  lines.push("    " + eId + '["' + shortLabel(shortName(entryKey), 26) + '"]');
+  lines.push("    style " + eId + " fill:#3f7f5f,color:#fff,stroke:#8fe3ae,stroke-width:3px");
   for (const [key] of Object.entries(subgraph)) {
     if (key === entryKey) continue;
-    lines.push("    " + mId(key) + '["' + shortName(key) + '"]');
+    lines.push("    " + mId(key) + '["' + shortLabel(shortName(key), 26) + '"]');
   }
   for (const [key, node] of Object.entries(subgraph)) {
     const fromId = mId(key);
@@ -1013,6 +914,20 @@ function selectNode(key) {
   // Refresh cytoscape to show the neighborhood around the selected node
   refreshCytoscape();
 }
+
+// Expand the Mermaid diagram without leaving the graph. Escape closes it.
+const mermaidContainer = document.getElementById("mermaid-container");
+const mermaidExpand = document.getElementById("mermaid-expand");
+mermaidExpand.addEventListener("click", function() {
+  const expanded = mermaidContainer.classList.toggle("expanded");
+  mermaidExpand.textContent = expanded ? "Close" : "Expand";
+});
+document.addEventListener("keydown", function(event) {
+  if (event.key === "Escape" && mermaidContainer.classList.contains("expanded")) {
+    mermaidContainer.classList.remove("expanded");
+    mermaidExpand.textContent = "Expand";
+  }
+});
 
 // Toolbar handlers
 document.getElementById("search").addEventListener("input", function() {
@@ -1424,7 +1339,7 @@ document.addEventListener("DOMContentLoaded", function() {
   // Auto-select the initial function if provided, else find a high-degree node
   let initKey = null;
   if (INITIAL_FN) {
-    initKey = Object.keys(GRAPH).find(k => k.endsWith("." + INITIAL_FN));
+    initKey = Object.keys(GRAPH).find(k => k === INITIAL_FN || k.endsWith("." + INITIAL_FN));
   }
   if (!initKey) {
     // Find the node with the most callees (likely a central function), skip hidden
