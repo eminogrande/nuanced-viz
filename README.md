@@ -42,6 +42,28 @@ cat graph.json | node dist/index.js --stdin
 | `-f, --fn <name>` | Function to focus on initially |
 | `-g, --graph <file>` | Load a pre-built graph JSON instead of building one |
 | `--stdin` | Read graph JSON from stdin |
+| `-o, --out <file>` | Write the HTML to `<file>` instead of a temp path |
+| `--no-open` | Don't open a browser (for CI / static hosting) |
+
+## Deploying / hosting
+
+The generated HTML is a single self-contained file, so it hosts anywhere
+static. To produce a file without opening a browser:
+
+```bash
+node dist/index.js --graph graph.json --out site/index.html --no-open
+```
+
+### GitHub Pages (live demo)
+
+This repo ships a workflow (`.github/workflows/deploy-pages.yml`) that builds a
+demo page visualizing nuanced-viz's *own* call graph and publishes it to
+GitHub Pages on every push to `main`. The demo graph is built with ts-morph
+alone (`npm run build:site`), so it needs no external services.
+
+One-time setup: in the repo's **Settings → Pages**, set **Source** to
+**GitHub Actions**. After the next push to `main`, the demo is live at
+`https://eminogrande.github.io/nuanced-viz/`.
 
 ## Browser UI
 
